@@ -7,7 +7,7 @@ import torch.distributed as dist
 from megatron.core import mpu
 from torch.distributed import get_rank
 import copy
-from collections import Counter
+from collections import Counter, defaultdict
 import os
 import re
 from .eplb import rebalance_experts
@@ -163,11 +163,11 @@ class MoELayer(BaseMoELayer):
             new_id_2_old_id_map[new_id] = old_id
         self.new_id_2_old_id_map = new_id_2_old_id_map
         self.replicate_weights_ready = False
-        print(f"[RANK {self.ep_rank}] Update ...")
-        print("num_moe_experts",self.config.num_moe_experts)
-        print("local_expert_indices", self.local_expert_indices)
-        print("new_id_2_old_id_map",new_id_2_old_id_map)
-        print("==================")
+        print(f"\n========== [RANK {self.ep_rank}] Update ... ==========")
+        print(f"  ▸ Total num_moe_experts       : {self.config.num_moe_experts}")
+        print(f"  ▸ Local expert indices        : {self.local_expert_indices}")
+        print(f"  ▸ New-to-old expert ID mapping: {new_id_2_old_id_map}")
+        print("====================================================================\n")
     def init_eplb(self):
         print("EPLB: one auxiliary expert in each rank")
         assert os.getenv("EPLB") == "1"
@@ -199,12 +199,12 @@ class MoELayer(BaseMoELayer):
         self.new_global_expert_indices = None
         # Optional: store actual token workload per expert for analysis
         self.workload_distribution = None
-        print(f"RANK[{self.ep_rank}] :")
-        print("\n[EPLB CONFIGURATION]")
+        prefix = f"[RANK {self.ep_rank}]"
+        print(f"{prefix} EPLB CONFIGURATION:")
         for k, v in self.eplb_para.items():
-            print(f"  {k}: {v}")
-        print("original_global_expert_indices",self.original_global_expert_indices)
-        print("local_expert_indices", self.local_expert_indices  )
+            print(f"{prefix}   {k}: {v}")
+        print(f"{prefix}  original_global_expert_indices: {self.original_global_expert_indices}")
+        print(f"{prefix}  local_expert_indices: {self.local_expert_indices}")
         print()
         
     
@@ -224,6 +224,7 @@ class MoELayer(BaseMoELayer):
         # Store new expert placement 
         self.new_global_expert_indices = phy2log.flatten().tolist()
         print("After EPLB, new_global_expert_indices: ", self.new_global_expert_indices)
+       
         # Remap weight values based on the new expert assignment
         self.eplb_modify_weights()
     def eplb_modify_weights(self):
@@ -251,6 +252,7 @@ class MoELayer(BaseMoELayer):
             fc2_global = fc2_global.to(fc2_local.device)
             with torch.no_grad():
                 fc2_local.data.copy_(fc2_global)
+         
     def replicate_modify_weights(self):
         if self.replicate_weights_ready:
             print(f"[RANK {self.ep_rank}] Already Update New expert weight")
@@ -302,8 +304,10 @@ class MoELayer(BaseMoELayer):
                 if self.auxiliary_cpu_experts_weight == None:
                 # Preload all experts wight to CPU, to be used in reorganizeing experts
                     path = os.getenv("EXPERT_PATH")
+                    assert path is not None, "When EPLB=1, the environment variable 'EXPERT_PATH' must be set."
                     print("self.layer_number",self.layer_number)
                     self.auxiliary_cpu_experts_weight = load_expert_cpu(path,self.layer_number)
+           
             probs, routing_map = self.router(hidden_states)
             
             
@@ -359,8 +363,12 @@ class MoELayer(BaseMoELayer):
             if int(os.getenv("EPLB", "0")) == 1:
                 self.eplb(routing_map)
                 # update probs, routing_map
+                if self.ep_rank==0:
+                    print("before",  routing_map.sum(dim=0).unsqueeze(0)   )
                 routing_map = eplb_modify(self.original_global_expert_indices,self.new_global_expert_indices, routing_map)
                 probs = eplb_modify(self.original_global_expert_indices,self.new_global_expert_indices, probs)
+                if self.ep_rank==0:
+                    print("after",  routing_map.sum(dim=0).unsqueeze(0)   )
             ##############################################################
             if int(os.getenv("MOE_TIME", "0")) == 1:
                 start_event = torch.cuda.Event(enable_timing=True)
@@ -389,14 +397,14 @@ class MoELayer(BaseMoELayer):
             output, mlp_bias = tensor_parallel.checkpoint(custom_forward, False, hidden_states)
         else:
             output, mlp_bias = custom_forward(hidden_states)
-        # if int(os.getenv("REPLICATE", "0")) == 0:
-        #     torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/mixtral/REPLICATE/{get_rank()}.pt")
-        # if int(os.getenv("REPLICATE", "0")) == 1:
-        #     torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/mixtral/REPLICATE/{get_rank()}_REPLICATE.pt") 
-        if int(os.getenv("EPLB", "0")) == 0:
-            torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/mixtral/EPLB/{get_rank()}.pt")
+  
+
+        if int(os.getenv("REPLICATE", "0")) == 0 and int(os.getenv("EPLB", "0")) == 0  :
+            torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/test/{get_rank()}.pt")
+        if int(os.getenv("REPLICATE", "0")) == 1:
+            torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/test/{get_rank()}_REPLICATE.pt")
         if int(os.getenv("EPLB", "0")) == 1:
-            torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/mixtral/EPLB/{get_rank()}_EPLB.pt")
+            torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/test/{get_rank()}_EPLB.pt")
         return output, mlp_bias
 
 def generate_balanced_routing_map(token_num, num_experts, topk,device):
@@ -442,35 +450,53 @@ def eplb_modify( original_indices , new_indices, data) -> torch.Tensor:
         torch.Tensor: Adjusted routing map with shape [num_tokens, len(new_indices)],
                       ensuring no token is routed twice to same expert.
     """
-    # ⚠️ Currently only supports each expert being replicated at most once
-    counts = Counter(new_indices)
-    # Check that no expert is assigned more than twice
-    for expert_id, count in counts.items():
-        if count > 2:
-            raise ValueError(f"Expert {expert_id} is assigned {count} times (only support up to 2)")
-    NUM_EXPERTS = data.shape[1]
+    def split_list_evenly(lst, C):
+        N = len(lst)
+        base = N // C
+        remainder = N % C  # extra elements to distribute to the first `remainder` chunks
+        result = []
+        start = 0
+        for i in range(C):
+            end = start + base + (1 if i < remainder else 0)
+            result.append(lst[start:end])
+            start = end
+        return result
+    TOKEN_NUM, NUM_EXPERTS = data.shape
     assert len(original_indices) == NUM_EXPERTS, "Mismatch in expert index count"
-    counts = Counter(new_indices) # Count how many times each expert appears
-    visited = [0] * NUM_EXPERTS   # Track how many times each expert is visited
+    counts = Counter(new_indices)  # how many times each expert is reused
+    usage_tracker = defaultdict(int)  # expert_id -> how many times already used
     results = []
-    for i in new_indices:
-        col = data[:, i] # Original column for expert i
-        col_new = torch.zeros_like(col, dtype= data.dtype)   # Create empty column with same shape
-        if counts[i] == 1:
-            # Only used once: copy entire column
+    for i, global_expert_id in enumerate(new_indices):
+        col = data[:, global_expert_id]  # original expert col
+        col_new = torch.zeros_like(col, dtype= data.dtype)
+        if counts[global_expert_id] == 1:
             col_new = col.clone()
         else:
-            # Used multiple times: split tokens
-            true_indices = torch.nonzero(col, as_tuple=True)[0]
-            mid = len(true_indices) // 2
-            if visited[i] == 0:
-                chosen = true_indices[:mid] # First time: assign first half
-                visited[i] += 1
+            # Get the token indices that are routed to this expert
+            true_indices = torch.nonzero(col, as_tuple=True)[0].tolist()   
+            # Evenly split them across multiple uses of the same expert
+            split_true_indices = split_list_evenly(true_indices,  counts[global_expert_id])
+            chosen_indices  =  split_true_indices [usage_tracker[global_expert_id]]  
+            # Assign the corresponding values (True or float)
+            if col.dtype == torch.bool:
+                col_new[chosen_indices] = True
             else:
-                chosen = true_indices[mid:] # Second time: assign second half
-            col_new[chosen] = True
+                col_new[chosen_indices] = col[chosen_indices]
+            usage_tracker[global_expert_id] += 1 
         results.append(col_new.unsqueeze(1))
     final_result = torch.cat(results, dim=1) # Final shape: [num_tokens, len(new_indices)]
+    row_sum = final_result.sum(dim=1)
+
+    if data.dtype == torch.bool: # for router map 
+        assert torch.all(row_sum == 2), (
+            f"[EPLB Modify Error] Not all tokens are routed to exactly 2 experts! "
+            f"Min: {row_sum.min().item()}, Max: {row_sum.max().item()}"
+        )
+    else: # for probs
+        assert torch.all(row_sum == 1), (
+            f"[EPLB Modify Error] Not all tokens are routed to exactly 2 experts! "
+            f"Min: {row_sum.min().item()}, Max: {row_sum.max().item()}"
+        )
     return final_result
     
     

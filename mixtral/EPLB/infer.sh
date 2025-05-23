@@ -2,25 +2,23 @@ export DEBUG=1
 export MOE_TIME=1
 export IDEAL=0
 export SKEW=0
-export EPLB=1
+export EPLB=0
 export REPLICATE=0
 export EXPERT_PATH="/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/mixtral/mixtral-mcore-TP1PP4EP1Layer1/iter_0000001/mp_rank_00_000/model_optim_rng.pt"
-
-  
-
-LOG_FILE="moe_infer_ideal${IDEAL}_skew${SKEW}.log"
+LOG_FILE="moe_infer_ideal${IDEAL}_skew${SKEW}_eplb${EPLB}.log"
 echo "DEBUG=$DEBUG"
 echo "MOE_TIME=$MOE_TIME"
 echo "IDEAL=$IDEAL"
 echo "SKEW=$SKEW"
+echo "EPLB=$EPLB"
+echo "REPLICATE=$REPLICATE"
 echo "LOG_FILE = $LOG_FILE"
-echo "EPLB = $EPLB"
 if [ "$IDEAL" -eq 1 ] && [ "$SKEW" -eq 1 ]; then
     echo "Error: IDEAL and SKEW cannot both be 1."
     exit 1
 fi
-if [ "$EPLB" -eq 1 ] && [ "$REPLICATE" -eq 1 ]; then
-    echo "Error: EPLB and SKEW cannot both be 1."
+if [ "$REPLICATE" -eq 1 ] && [ "$SKEW" -eq 1 ]; then
+    echo "Error: REPLICATE and SKEW cannot both be 1."
     exit 1
 fi
 
@@ -38,12 +36,12 @@ torchrun $DISTRIBUTED_ARGS ../../tools/run_text_generation_server.py   \
        --tensor-model-parallel-size 1  \
        --pipeline-model-parallel-size 1  \
        --expert-model-parallel-size 4 \
+       --load ${CHECKPOINT}  \
        --tokenizer-type Llama2Tokenizer \
        --tokenizer-model $TOKENIZER_MODEL \
        --use-mcore-models \
        --max-position-embeddings 32768 \
        --num-layers 1 \
-       --load ${CHECKPOINT} \
        --hidden-size 4096 \
        --ffn-hidden-size 14336 \
        --num-attention-heads 32 \

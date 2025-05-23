@@ -17,3 +17,5 @@ onelogger.err
 *.log
 mixtral/dynamic_inferecne/*
 mixtral/EPLB/weight.py
+env.sh
+.gitignore
