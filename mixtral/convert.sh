@@ -27,7 +27,15 @@ python ../tools/checkpoint/convert.py \
  
 if [ $? -eq 0 ]; then
     echo "Modify key of weights: $MEGATRON_FORMAT_DIR"
-    python modify_dict.py --root_dir $MEGATRON_FORMAT_DIR
+    python modify_dict.py --root_dir $MEGATRON_FORMAT_DIR --hf_path $HF_FORMAT_DIR
+
+    if [ $? -eq 0 ]; then
+        echo "Check weights: $MEGATRON_FORMAT_DIR"
+        python check_weight_hf.py --root_dir $MEGATRON_FORMAT_DIR --hf_path $HF_FORMAT_DIR
+    else
+        echo "modify_dict.py failed, skipping check_weight_hf.py."
+    fi
+
 else
-    echo "Conversion failed, skipping modify_dict.py."
+    echo "Conversion failed, skipping modify_dict.py and check_weight_hf.py."
 fi

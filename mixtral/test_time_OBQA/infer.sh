@@ -57,6 +57,7 @@ torchrun $DISTRIBUTED_ARGS ../../tools/run_text_generation_server.py   \
        --no-rope-fusion \
        --no-gradient-accumulation-fusion \
        --max-batch-size 8 \
+       --vocab-size 32000 \
        --inference-max-seq-length 32768 2>&1 | tee $LOG_FILE
 end_time=$(date +%s)  # 记录结束时间
 elapsed=$((end_time - start_time))

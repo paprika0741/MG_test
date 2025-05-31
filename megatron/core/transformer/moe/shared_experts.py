@@ -38,8 +38,8 @@ class SharedExpertMLP(MLP):
 
         config.ffn_hidden_size = config.moe_shared_expert_intermediate_size
         super().__init__(config=config, submodules=submodules)
-
-        self.use_shared_expert_gate = gate
+        # [modified]
+        self.use_shared_expert_gate = config.moe_use_shared_expert_gate
         if self.use_shared_expert_gate:
             # TODO: Add support for GPU initialization, which requires updating the golden values.
             self.gate_weight = torch.nn.Parameter(torch.empty((1, self.config.hidden_size)))

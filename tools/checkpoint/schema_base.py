@@ -9,7 +9,7 @@ class ModelSchema:
 
     def __init__(self, mapping):
         self._mapping = dict(mapping)
-
+        print("[Debug] Registered layer keys:", list(mapping["layer"].keys()))
         for key in (
             "embeddings",
             "layer_prefix",

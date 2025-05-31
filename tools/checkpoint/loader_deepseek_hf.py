@@ -8,15 +8,7 @@ import transformers
 from tqdm import tqdm
 import types
 
-def check_sparsity(tensor):
-    total_elements = tensor.numel()
-    zero_count = (tensor == 0).sum().item()
-    sparsity = zero_count / total_elements
-    
-    print(f"  Zero count: {zero_count}")
-    print(f"  Total elements: {total_elements}")
-    print(f"  Sparsity: {sparsity:.4f}")
-    
+
 def add_arguments(parser):
     group = parser.add_argument_group(title='Mixtral HF loader.')
 
@@ -32,41 +24,61 @@ def add_arguments(parser):
 
 
 def load_args_from_checkpoint(args):
-    # Read Mixtral 8x7B args.
-    from transformers import MixtralConfig
-    mixtral_config = MixtralConfig.from_pretrained(args.load)
+    # [modified]  according to https://github.com/NVIDIA/Megatron-LM/blob/20304a309c1c44b9183c349eb110a5156c2eb84f/examples/post_training/modelopt/conf/deepseek-ai/DeepSeek-V2-Lite.sh#L4
+    # support other models
+    from transformers import AutoConfig
+    config = AutoConfig.from_pretrained(args.load, trust_remote_code=True)
 
     # Update Megatron args.
-    args.untie_embeddings_and_output_weights = True
+    
     args.seq_length = 4096
     args.global_batch_size = 1024
     args.iteration = 1 # '0', 'release' don't work
-    args.add_position_embedding = False
-    args.use_rotary_position_embeddings = True
-    args.swiglu = True
-    args.bf16 = True
-    args.add_bias_linear = False
+    args.add_position_embedding = True
+    args.max_position_embeddings = config.max_position_embeddings
+    args.num_layers = config.num_hidden_layers
+    args.hidden_size = config.hidden_size
+    args.num_attention_heads = config.num_attention_heads
+    args.kv_channels = 16 
+    args.kv_lora_rank = config.kv_lora_rank
+    args.v_head_dim = 128
+    args.qk_head_dim = 128  #TODO: not same exactly with config.json 
+    args.qk_pos_emb_head_dim = 64 #?
+    args.multi_latent_attention = True
     args.normalization = "RMSNorm"
+    args.swiglu = True
+    args.untie_embeddings_and_output_weights = True
+    args.bf16 = True
+    args.use_rotary_position_embeddings = True
+    
+   
+    args.add_bias_linear = False
+  
     args.tokenizer_type = "Llama2Tokenizer"
     args.disable_bias_linear = True
-
-    args.max_position_embeddings = mixtral_config.max_position_embeddings
-    args.hidden_size = mixtral_config.hidden_size
-    args.num_attention_heads = mixtral_config.num_attention_heads
-    args.num_layers = mixtral_config.num_hidden_layers
-    args.norm_epsilon = mixtral_config.rms_norm_eps
-    args.vocab_size = mixtral_config.vocab_size
-    args.padded_vocab_size = mixtral_config.vocab_size
-    args.mixtral = mixtral_config
-    args.ffn_hidden_size = mixtral_config.intermediate_size
-    args.num_experts = mixtral_config.num_local_experts
+    
+    args.norm_epsilon = config.rms_norm_eps
+    args.vocab_size = config.vocab_size
+    args.padded_vocab_size = config.vocab_size
+    args.moe_layer_freq = ([0] * config.moe_layer_freq + [1] * (config.num_hidden_layers - config.moe_layer_freq))
+    args.mixtral = config
+    args.qk_layernorm = True
+    # ?
+    args.moe_ffn_hidden_size = config.moe_intermediate_size
+    args.moe_router_pre_softmax = True
+    # https://github.com/huggingface/transformers/blob/main/src/transformers/models/deepseek_v3/modeling_deepseek_v3.py#L166C8-L168C10
+    args.moe_shared_expert_intermediate_size = config.moe_intermediate_size  * config.n_shared_experts
+    args.ffn_hidden_size = config.intermediate_size
+    args.num_experts = config.n_routed_experts
     args.sequence_parallel = True
+    args.num_experts_per_tok = config.num_experts_per_tok
+    
     # [modified]
     args.apply_rope_fusion = False
     args.gradient_accumulation_fusion = False
-    if mixtral_config.num_key_value_heads:
+    if config.num_key_value_heads:
         args.group_query_attention = True
-        args.num_query_groups = mixtral_config.num_key_value_heads
+        args.num_query_groups = config.num_key_value_heads
 
 def verify_transformers_version():
     major, minor, patch = map(int, transformers.__version__.split('.'))
@@ -76,7 +88,6 @@ def set_preprocess_state(args, model, hf_model):
     '''Set embedding params.'''
     model.embedding.word_embeddings.weight.data.copy_(
         hf_model.model.embed_tokens.weight)
-  
 
 def set_postprocess_state(args, model, hf_model):
     '''Set output layer & norm params.'''
@@ -89,7 +100,7 @@ def set_attn_state(args, layer, hf_layer):
     # Get attention layer & state.
     attn = layer.self_attention
     hf_attn = hf_layer.self_attn
-
+    
     # Reshape loaded weights.
     tp = args.tensor_model_parallel_size
     num_heads = args.num_attention_heads // tp
@@ -97,35 +108,50 @@ def set_attn_state(args, layer, hf_layer):
     num_querys_per_group = num_heads // num_query_groups
     dim = args.kv_channels
     assert num_heads % num_querys_per_group == 0
-    print("num_query_groups",num_query_groups)
-    print("dim",dim)
-    print("num_querys_per_group*dim", num_querys_per_group*dim)
-    # Copy weights (re-order dimensions for Megatron).
-    attn.linear_qkv.weight.data.copy_(torch.cat([
-        hf_attn.q_proj.weight.reshape((num_query_groups, num_querys_per_group*dim, -1)),
-        hf_attn.k_proj.weight.reshape((num_query_groups, dim, -1)),
-        hf_attn.v_proj.weight.reshape((num_query_groups, dim, -1)),
-    ], dim=1).reshape((-1, args.hidden_size)))
+    
+    attn.linear_kv_down_proj.weight.data.copy_(hf_attn.kv_a_proj_with_mqa.weight)
     attn.linear_proj.weight.data.copy_(hf_attn.o_proj.weight)
-
+    attn.linear_q_proj.weight.data.copy_(hf_attn.q_proj.weight)
+    attn.linear_kv_up_proj.weight.data.copy_(hf_attn.kv_b_proj.weight)
+    # layer norm
+    print("Check linear_kv_up_proj")
+    for name, param in attn.linear_kv_up_proj.named_parameters():
+        print(name, param.shape)
+    attn.linear_kv_up_proj.layer_norm_weight.data.copy_(hf_attn.kv_a_layernorm.weight)
+    # rotary_emb
+    
+    
 def set_mlp_state(args, layer, hf_layer):
     '''Set MLP params.'''
-
-    layer.mlp.router.weight.data.copy_(hf_layer.block_sparse_moe.gate.weight)
-
-    mcore_experts = layer.mlp.experts.local_experts
-    hf_experts = hf_layer.block_sparse_moe.experts
-    for expert_idx in range(args.num_experts):
-        mcore_experts[expert_idx].linear_fc1.weight.data.copy_(
-            torch.cat([
-                hf_experts[expert_idx].w1.weight,
-                hf_experts[expert_idx].w3.weight
-            ], dim=0)
+    # NOTE hf_layer weigt keys are different between different models
+ 
+    if hasattr(layer.mlp, 'router'):
+        print("Moe layer")
+        layer.mlp.router.weight.data.copy_(hf_layer.mlp.gate.weight)
+        mcore_experts = layer.mlp.experts.local_experts
+        hf_experts = hf_layer.mlp.experts
+        for expert_idx in range(args.num_experts):
+            mcore_experts[expert_idx].linear_fc1.weight.data.copy_(
+                torch.cat([
+                    hf_experts[expert_idx].gate_proj.weight,
+                    hf_experts[expert_idx].up_proj.weight
+                ], dim=0)
+            )
+            mcore_experts[expert_idx].linear_fc2.weight.data.copy_(
+                hf_experts[expert_idx].down_proj.weight
+            )
+    else:
+        print("dense layer")
+        layer.mlp.linear_fc1.weight.data.copy_(
+             torch.cat([
+                 hf_layer.mlp.gate_proj.weight,
+                 hf_layer.mlp.up_proj.weight
+                ], dim=0)
         )
-        mcore_experts[expert_idx].linear_fc2.weight.data.copy_(
-            hf_experts[expert_idx].w2.weight
+        layer.mlp.linear_fc2.weight.data.copy_(
+            hf_layer.mlp.down_proj.weight
         )
-
+        
 def set_layer_state(args, model, hf_model, layer_idx):
     '''Set transformer layer params.'''
 
@@ -134,29 +160,28 @@ def set_layer_state(args, model, hf_model, layer_idx):
 
     set_attn_state(args, layer, hf_layer)
     set_mlp_state(args, layer, hf_layer)
-
-    layer.self_attention.linear_qkv.layer_norm_weight.data.copy_(hf_layer.input_layernorm.weight)
-    #  layer.self_attention.linear_qkv is TELayerNormColumnParallelLinear
-    print("layer.self_attention.linear_qkv")
-    for name, param in layer.self_attention.linear_qkv.named_parameters():
-        print(name, param.shape)
-
-    layer.pre_mlp_layernorm.weight.data.copy_(hf_layer.post_attention_layernorm.weight)
+    
+    # (input_layernorm): RMSNorm()
+    layer.input_layernorm.weight.data.copy_(hf_layer.input_layernorm.weight)
+    # TODO:
+    # layer.pre_mlp_layernorm.weight.data.copy_(hf_layer.post_attention_layernorm.weight)
 
 def load_checkpoint_to_model(args):
     '''Set model params.'''
 
     from pretrain_gpt import model_provider
-    from transformers import MixtralForCausalLM, MixtralConfig
+    from transformers import AutoModelForCausalLM, AutoConfig
 
     # Load Huggingface model.
 
-    hf_model = MixtralForCausalLM.from_pretrained(args.load, device_map="cpu")
+    hf_model = AutoModelForCausalLM.from_pretrained(args.load, device_map="cpu", trust_remote_code=True)
     print("hf model")
     print(hf_model)
+    # print(hf_model)
+    
     # Init Megatron model.
     model = model_provider(True, True).to(args.params_dtype)
-    print("mg model")
+    print("megatron")
     print(model)
     # Set model state.
     set_preprocess_state(args, model, hf_model)
@@ -313,10 +338,10 @@ def _load_checkpoint(queue, args):
 
     for layer_idx in range(margs.num_layers):
         message = {}
-
+        #TODO: 
         # Get non-parallel tensors from tp_rank 0.
         layer = model.decoder.layers[layer_idx]
-        message["input norm weight"] = layer.self_attention.linear_qkv.layer_norm_weight.data
+        message["input norm weight"] = layer.self_attention.input_layernorm.data
         message["post norm weight"] = layer.pre_mlp_layernorm.weight.data
 
         # Simple concat of the rest.
@@ -330,14 +355,11 @@ def _load_checkpoint(queue, args):
         message["router weight"] = layer.mlp.router.weight.data
         if md.swiglu:
             chunked_mlp_l0_weight =  [torch.chunk(local_expert.linear_fc1.weight.data, 2, dim=0) for local_expert in experts]
-           
             message["mlp l0 weight W"] = torch.stack([local_weight[0] for local_weight in chunked_mlp_l0_weight], dim=0)
             message["mlp l0 weight V"] = torch.stack([local_weight[1] for local_weight in chunked_mlp_l0_weight], dim=0)
         else:
             message["mlp l0 weight"] = torch.stack([local_expert.linear_fc1.weight.data for local_expert in experts])
         message["mlp l1 weight"] = torch.stack([local_expert.linear_fc2.weight.data for local_expert in experts], dim=0)
-        print("check_sparsity")
-        check_sparsity(message["mlp l1 weight"])
 
         queue_put(f"transformer layer {layer_idx}", message)
 

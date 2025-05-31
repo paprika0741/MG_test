@@ -6,7 +6,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 from torch import Tensor
-
+import os
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.rope_utils import (
@@ -709,22 +709,48 @@ class SelfAttention(Attention):
         )
 
         if submodules.q_layernorm is not None:
-            self.q_layernorm = build_module(
-                submodules.q_layernorm,
-                hidden_size=self.hidden_size_per_attention_head,
-                config=self.config,
-                eps=self.config.layernorm_epsilon,
-            )
+            if os.getenv("OLMoE", "0") == "1":
+                # [Hardcoded] For OLMoE models, use full hidden_size instead of per-head hidden size
+                # This is a temporary hack controlled via the environment variable `OLMoE=1`
+                # Reason: OLMoE uses q_layernorm over full hidden dimension, not per-head
+                print("[Warning] OLMoE=1 detected. Overriding q_layernorm hidden_size to full hidden_size "
+                f"({self.config.hidden_size}) instead of per-head ({self.hidden_size_per_attention_head}).")
+                self.q_layernorm = build_module(
+                    submodules.q_layernorm,
+                    hidden_size=self.config.hidden_size,
+                    config=self.config,
+                    eps=self.config.layernorm_epsilon,
+                )
+            else:  
+                self.q_layernorm = build_module(
+                    submodules.q_layernorm,
+                    hidden_size=self.hidden_size_per_attention_head,
+                    config=self.config,
+                    eps=self.config.layernorm_epsilon,
+                )
         else:
             self.q_layernorm = None
 
         if submodules.k_layernorm is not None:
-            self.k_layernorm = build_module(
-                submodules.k_layernorm,
-                hidden_size=self.hidden_size_per_attention_head,
-                config=self.config,
-                eps=self.config.layernorm_epsilon,
-            )
+            if os.getenv("OLMoE", "0") == "1":
+                # [Hardcoded] For OLMoE models, use full hidden_size instead of per-head hidden size
+                # This is a temporary hack controlled via the environment variable `OLMoE=1`
+                # Reason: OLMoE uses q_layernorm over full hidden dimension, not per-head
+                print("[Warning] OLMoE=1 detected. Overriding q_layernorm hidden_size to full hidden_size "
+                f"({self.config.hidden_size}) instead of per-head ({self.hidden_size_per_attention_head}).")
+                self.k_layernorm = build_module(
+                    submodules.k_layernorm,
+                    hidden_size=self.config.hidden_size,
+                    config=self.config,
+                    eps=self.config.layernorm_epsilon,
+                )
+            else:
+                self.k_layernorm = build_module(
+                    submodules.k_layernorm,
+                    hidden_size=self.hidden_size_per_attention_head,
+                    config=self.config,
+                    eps=self.config.layernorm_epsilon,
+                )
         else:
             self.k_layernorm = None
 

@@ -27,7 +27,7 @@ def load_args_from_checkpoint(args):
     # [modified] 
     # support other models
     from transformers import AutoConfig
-    mixtral_config = AutoConfig.from_pretrained(args.load)
+    hf_config = AutoConfig.from_pretrained(args.load)
 
     # Update Megatron args.
     args.untie_embeddings_and_output_weights = True
@@ -40,27 +40,48 @@ def load_args_from_checkpoint(args):
     args.bf16 = True
     args.add_bias_linear = False
     args.normalization = "RMSNorm"
+    '''
+    TODO: Currently, qk_layernorm is initialized with hidden_size = 128,
+    which does not match config.hidden_size = 2048.
+     In `megatron/core/transformer/attention.py`, the relevant code is:
+
+        self.q_layernorm = build_module(
+            submodules.q_layernorm,
+            hidden_size=self.hidden_size_per_attention_head,
+            config=self.config,
+            eps=self.config.layernorm_epsilon,
+        )
+
+    Here, `self.hidden_size_per_attention_head = self.config.kv_channels`,
+    which equals 128 in this case.
+    However, `self.config.kv_channels` is determined by model architecture, can not be modified randomly
+    args.qk_layernorm should be False
+    '''
+    if os.getenv("OLMoE", "0") == "1":
+        args.qk_layernorm = True # For olmoe 
     args.tokenizer_type = "Llama2Tokenizer"
     args.disable_bias_linear = True
-
-    args.max_position_embeddings = mixtral_config.max_position_embeddings
-    args.hidden_size = mixtral_config.hidden_size
-    args.num_attention_heads = mixtral_config.num_attention_heads
-    args.num_layers = mixtral_config.num_hidden_layers
-    args.norm_epsilon = mixtral_config.rms_norm_eps
-    args.vocab_size = mixtral_config.vocab_size
-    args.padded_vocab_size = mixtral_config.vocab_size
-    args.mixtral = mixtral_config
-    args.ffn_hidden_size = mixtral_config.intermediate_size
-    args.num_experts = mixtral_config.num_experts
+    # get args from hf model config
+    # check the attribute name of hf_config
+    args.max_position_embeddings = hf_config.max_position_embeddings
+    args.hidden_size = hf_config.hidden_size
+    args.num_attention_heads = hf_config.num_attention_heads
+    args.num_layers = hf_config.num_hidden_layers
+    args.norm_epsilon = hf_config.rms_norm_eps
+    args.vocab_size = hf_config.vocab_size
+    args.padded_vocab_size = hf_config.vocab_size
+    args.mixtral = hf_config
+    args.ffn_hidden_size = hf_config.intermediate_size
+    args.num_experts = hf_config.num_experts
     args.sequence_parallel = True
-    args.num_experts_per_tok = mixtral_config.num_experts_per_tok
+    args.num_experts_per_tok = hf_config.num_experts_per_tok
     # [modified]
+    
     args.apply_rope_fusion = False
     args.gradient_accumulation_fusion = False
-    if mixtral_config.num_key_value_heads:
+    if hf_config.num_key_value_heads:
         args.group_query_attention = True
-        args.num_query_groups = mixtral_config.num_key_value_heads
+        args.num_query_groups = hf_config.num_key_value_heads
 
 def verify_transformers_version():
     major, minor, patch = map(int, transformers.__version__.split('.'))
@@ -90,7 +111,9 @@ def set_attn_state(args, layer, hf_layer):
     num_querys_per_group = num_heads // num_query_groups
     dim = args.kv_channels
     assert num_heads % num_querys_per_group == 0
-
+    print("num_query_groups",num_query_groups)
+    print("dim",dim)
+    print("num_querys_per_group*dim", num_querys_per_group*dim)
     # Copy weights (re-order dimensions for Megatron).
     attn.linear_qkv.weight.data.copy_(torch.cat([
         hf_attn.q_proj.weight.reshape((num_query_groups, num_querys_per_group*dim, -1)),
@@ -98,6 +121,16 @@ def set_attn_state(args, layer, hf_layer):
         hf_attn.v_proj.weight.reshape((num_query_groups, dim, -1)),
     ], dim=1).reshape((-1, args.hidden_size)))
     attn.linear_proj.weight.data.copy_(hf_attn.o_proj.weight)
+    
+    for name, param in layer.self_attention.linear_qkv.named_parameters():
+        print(name, param.shape)
+    
+    
+    if os.getenv("OLMoE", "0") == "1":
+        print("attn.q_layernorm.weight.shape")
+        print(attn.q_layernorm.weight.shape)
+        attn.q_layernorm.weight.data.copy_(hf_attn.q_norm.weight)
+        attn.k_layernorm.weight.data.copy_(hf_attn.k_norm.weight)
 
 def set_mlp_state(args, layer, hf_layer):
     '''Set MLP params.'''
@@ -128,6 +161,7 @@ def set_layer_state(args, model, hf_model, layer_idx):
 
     layer.self_attention.linear_qkv.layer_norm_weight.data.copy_(hf_layer.input_layernorm.weight)
     layer.pre_mlp_layernorm.weight.data.copy_(hf_layer.post_attention_layernorm.weight)
+     
 
 def load_checkpoint_to_model(args):
     '''Set model params.'''
@@ -141,7 +175,11 @@ def load_checkpoint_to_model(args):
 
     # Init Megatron model.
     model = model_provider(True, True).to(args.params_dtype)
-
+    print("hf model")
+    print(hf_model)
+    print("mg model")
+    print(model)
+   
     # Set model state.
     set_preprocess_state(args, model, hf_model)
     set_postprocess_state(args, model, hf_model)
@@ -198,6 +236,7 @@ def _load_checkpoint(queue, args):
 
     margs = parse_args()
     margs.tokenizer_model = args.tokenizer_model
+    # load paras fomr HF config
     load_args_from_checkpoint(margs)
 
     # Arguments do sanity checks on the world size, but we don't care,
@@ -269,16 +308,19 @@ def _load_checkpoint(queue, args):
     md.consumed_train_samples = 0
     md.consumed_valid_samples = 0
     md.num_experts = margs.num_experts
+    # 
     # [modified]
     md.qkv_bias =  False
     # Get first pipe stage.
     mpu.set_tensor_model_parallel_rank(0)
     mpu.set_pipeline_model_parallel_rank(0)
     mpu.set_expert_model_parallel_rank(0)
+    
+    # load HF model and MG model, load weight of HF model --> MG model 
     model = load_checkpoint_to_model(margs)
-
+    # 
     queue.put(md)
-
+    # 将模型按模块组织成结构化 message 发送到队列
     def queue_put(name, msg):
         print(f"sending {name}")
         msg["name"] = name

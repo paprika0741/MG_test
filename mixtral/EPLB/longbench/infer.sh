@@ -1,15 +1,38 @@
 export DEBUG=1
-export MOE_TIME=0
+export MOE_TIME=1
 export IDEAL=0
+export SKEW=0
+export EPLB=0
+export REPLICATE=0
+export EXPERT_PATH="/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/mixtral/mixtral-mcore-TP1PP4EP1Layer1/iter_0000001/mp_rank_00_000/model_optim_rng.pt"
+LOG_FILE="moe_infer_ideal${IDEAL}_skew${SKEW}_eplb${EPLB}.log"
+echo "DEBUG=$DEBUG"
+echo "MOE_TIME=$MOE_TIME"
+echo "IDEAL=$IDEAL"
+echo "SKEW=$SKEW"
+echo "EPLB=$EPLB"
+echo "REPLICATE=$REPLICATE"
+echo "LOG_FILE = $LOG_FILE"
+if [ "$IDEAL" -eq 1 ] && [ "$SKEW" -eq 1 ]; then
+    echo "Error: IDEAL and SKEW cannot both be 1."
+    exit 1
+fi
+if [ "$REPLICATE" -eq 1 ] && [ "$SKEW" -eq 1 ]; then
+    echo "Error: REPLICATE and SKEW cannot both be 1."
+    exit 1
+fi
 
-DISTRIBUTED_ARGS="--nproc_per_node 4 --nnodes 1"
-         
-
+DISTRIBUTED_ARGS="--nproc_per_node 4 \
+                  --nnodes 1 \
+                  --node_rank 0 \
+                  --master_addr localhost \
+                  --master_port 6000"
 CHECKPOINT="/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/mixtral/mixtral-mcore-TP1PP1EP4Layer1"
 TOKENIZER_MODEL=/home/ec2-user/CodeSpace/Megatron-LM/ckp/tokenizer.model
-
+start_time=$(date +%s) 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
-torchrun $DISTRIBUTED_ARGS ./gpt_static_inference.py    \
+torchrun $DISTRIBUTED_ARGS ../../../tools/run_text_generation_server.py   \
+       --port 5000 \
        --tensor-model-parallel-size 1  \
        --pipeline-model-parallel-size 1  \
        --expert-model-parallel-size 4 \
@@ -42,10 +65,8 @@ torchrun $DISTRIBUTED_ARGS ./gpt_static_inference.py    \
        --no-rope-fusion \
        --no-gradient-accumulation-fusion \
        --max-batch-size 8 \
-       --inference-max-seq-length 32768 \
        --vocab-size 32000 \
-       --prompts "Notably, the degree of acceleration is influenced by the numerical relationship between the number of experts and GPUs in Expert Parallelism. In Mixtral-8×7B-Instruct, one-to-one deployment maximizes the effectiveness of capacity-aware inference. To use a different security group, choose Select existing security group and choose an existing security group."   \
-       --num-tokens-to-generate 1 \
-       
- 
-
+       --inference-max-seq-length 32768 2>&1 | tee $LOG_FILE
+end_time=$(date +%s)  # 记录结束时间
+elapsed=$((end_time - start_time))
+echo "Total runtime: ${elapsed} seconds" | tee -a $LOG_FILE

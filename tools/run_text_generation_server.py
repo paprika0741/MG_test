@@ -67,7 +67,6 @@ def model_provider(
 
     args = get_args()
     use_te = args.transformer_impl == "transformer_engine"
-
     print_rank_0('building GPT model ...')
 
     # Experimental loading arguments from yaml
@@ -96,11 +95,11 @@ def model_provider(
                 transformer_layer_spec = get_gpt_layer_local_spec(
                     args.num_experts, args.moe_grouped_gemm, args.qk_layernorm
                 )
-
         model = GPTModel(
             config=config,
             transformer_layer_spec=transformer_layer_spec,
-            vocab_size=args.padded_vocab_size,
+            # [modified]  original  vocab_size=args.padded_vocab_size,
+            vocab_size=args.vocab_size,
             max_sequence_length=args.max_position_embeddings,
             pre_process=pre_process,
             post_process=post_process,
@@ -214,7 +213,7 @@ if __name__ == "__main__":
     assert len(model) == 1, "Above condition should have caught this"
     model = model[0]
     model.eval()
-
+    print_rank_0(model)
     inference_engine = get_inference_engine(args, model)
 
     if args.enable_cuda_graph:

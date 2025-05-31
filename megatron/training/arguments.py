@@ -2478,6 +2478,11 @@ def _add_moe_args(parser):
     group.add_argument('--moe-ffn-hidden-size', type=int, default=None,
                        help='The hidden size of each expert\'s feed-forward network (ffn). '
                        'If not specified, defaults to the ffn_hidden_size.')
+    group.add_argument(
+                '--moe-use-shared-expert-gate',
+                action='store_true',
+                help='Enable gating for the shared expert in MoE routing.'
+            )
     group.add_argument('--moe-shared-expert-intermediate-size', type=int, default=None,
                        help='Shared expert total ffn hidden size. '
                        'It should be equal to "num_shared_experts * ffn_size_of_each_shared_expert" if there are multiple shared experts. '

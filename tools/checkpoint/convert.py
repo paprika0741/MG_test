@@ -143,6 +143,7 @@ def main():
 
     # Load loader/saver plugins.
     loader = load_plugin('loader', known_args.loader)
+    print(loader)
     saver = load_plugin('saver', known_args.saver)
 
     # Parser loader/saver args.

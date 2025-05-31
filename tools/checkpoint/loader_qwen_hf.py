@@ -8,15 +8,7 @@ import transformers
 from tqdm import tqdm
 import types
 
-def check_sparsity(tensor):
-    total_elements = tensor.numel()
-    zero_count = (tensor == 0).sum().item()
-    sparsity = zero_count / total_elements
-    
-    print(f"  Zero count: {zero_count}")
-    print(f"  Total elements: {total_elements}")
-    print(f"  Sparsity: {sparsity:.4f}")
-    
+
 def add_arguments(parser):
     group = parser.add_argument_group(title='Mixtral HF loader.')
 
@@ -32,9 +24,10 @@ def add_arguments(parser):
 
 
 def load_args_from_checkpoint(args):
-    # Read Mixtral 8x7B args.
-    from transformers import MixtralConfig
-    mixtral_config = MixtralConfig.from_pretrained(args.load)
+    # [modified] 
+    # support other models
+    from transformers import AutoConfig
+    config = AutoConfig.from_pretrained(args.load)
 
     # Update Megatron args.
     args.untie_embeddings_and_output_weights = True
@@ -50,23 +43,29 @@ def load_args_from_checkpoint(args):
     args.tokenizer_type = "Llama2Tokenizer"
     args.disable_bias_linear = True
 
-    args.max_position_embeddings = mixtral_config.max_position_embeddings
-    args.hidden_size = mixtral_config.hidden_size
-    args.num_attention_heads = mixtral_config.num_attention_heads
-    args.num_layers = mixtral_config.num_hidden_layers
-    args.norm_epsilon = mixtral_config.rms_norm_eps
-    args.vocab_size = mixtral_config.vocab_size
-    args.padded_vocab_size = mixtral_config.vocab_size
-    args.mixtral = mixtral_config
-    args.ffn_hidden_size = mixtral_config.intermediate_size
-    args.num_experts = mixtral_config.num_local_experts
+    args.max_position_embeddings = config.max_position_embeddings
+    args.hidden_size = config.hidden_size
+    args.num_attention_heads = config.num_attention_heads
+    args.num_layers = config.num_hidden_layers
+    args.norm_epsilon = config.rms_norm_eps
+    args.vocab_size = config.vocab_size
+    args.padded_vocab_size = config.vocab_size
+    args.mixtral = config
+ 
+    args.moe_ffn_hidden_size = config.moe_intermediate_size
+    args.moe_shared_expert_intermediate_size = config.shared_expert_intermediate_size
+    #TODO:
+    args.moe_use_shared_expert_gate = True  # [modified]
+    args.ffn_hidden_size = config.intermediate_size
+    args.num_experts = config.num_experts
     args.sequence_parallel = True
-    # [modified]
+    args.num_experts_per_tok = config.num_experts_per_tok
+    args.add_qkv_bias = True  # [modified]
     args.apply_rope_fusion = False
     args.gradient_accumulation_fusion = False
-    if mixtral_config.num_key_value_heads:
+    if config.num_key_value_heads:
         args.group_query_attention = True
-        args.num_query_groups = mixtral_config.num_key_value_heads
+        args.num_query_groups = config.num_key_value_heads
 
 def verify_transformers_version():
     major, minor, patch = map(int, transformers.__version__.split('.'))
@@ -76,7 +75,6 @@ def set_preprocess_state(args, model, hf_model):
     '''Set embedding params.'''
     model.embedding.word_embeddings.weight.data.copy_(
         hf_model.model.embed_tokens.weight)
-  
 
 def set_postprocess_state(args, model, hf_model):
     '''Set output layer & norm params.'''
@@ -99,6 +97,7 @@ def set_attn_state(args, layer, hf_layer):
     assert num_heads % num_querys_per_group == 0
     print("num_query_groups",num_query_groups)
     print("dim",dim)
+    print("num_querys_per_group",num_querys_per_group)
     print("num_querys_per_group*dim", num_querys_per_group*dim)
     # Copy weights (re-order dimensions for Megatron).
     attn.linear_qkv.weight.data.copy_(torch.cat([
@@ -110,21 +109,45 @@ def set_attn_state(args, layer, hf_layer):
 
 def set_mlp_state(args, layer, hf_layer):
     '''Set MLP params.'''
-
-    layer.mlp.router.weight.data.copy_(hf_layer.block_sparse_moe.gate.weight)
+    # NOTE hf_layer weigt keys are different between different models
+    layer.mlp.router.weight.data.copy_(hf_layer.mlp.gate.weight)
 
     mcore_experts = layer.mlp.experts.local_experts
-    hf_experts = hf_layer.block_sparse_moe.experts
+    hf_experts = hf_layer.mlp.experts
     for expert_idx in range(args.num_experts):
         mcore_experts[expert_idx].linear_fc1.weight.data.copy_(
             torch.cat([
-                hf_experts[expert_idx].w1.weight,
-                hf_experts[expert_idx].w3.weight
+                hf_experts[expert_idx].gate_proj.weight,
+                hf_experts[expert_idx].up_proj.weight
             ], dim=0)
         )
         mcore_experts[expert_idx].linear_fc2.weight.data.copy_(
-            hf_experts[expert_idx].w2.weight
+            hf_experts[expert_idx].down_proj.weight
         )
+    # shared experts
+    layer.mlp.shared_experts.linear_fc1.weight.data.copy_(
+        torch.cat([
+                hf_layer.mlp.shared_expert.gate_proj.weight,
+                hf_layer.mlp.shared_expert.up_proj.weight
+            ], dim=0)
+    )
+    layer.mlp.shared_experts.linear_fc2.weight.data.copy_(
+        hf_layer.mlp.shared_expert.down_proj.weight
+    )
+    print("Shared  experts")
+    for name, param in layer.mlp.shared_experts.named_parameters():
+        print(f"name {name}: {param.shape}")
+    if hasattr(layer.mlp.shared_experts, "gate_weight") and layer.mlp.shared_experts.gate_weight is not None:
+        hf_weight = hf_layer.mlp.shared_expert_gate.weight
+        assert not torch.isnan(hf_weight).any(), "NaN detected in hf_layer.mlp.shared_expert_gate.weight"
+        assert not torch.isinf(hf_weight).any(), "Inf detected in hf_layer.mlp.shared_expert_gate.weight"
+        # Copy safely
+        # layer.mlp.shared_experts.gate_weight is a tensor
+        with torch.no_grad():
+            layer.mlp.shared_experts.gate_weight.copy_(hf_weight)
+            print("Check gate_weight after copy:")
+        assert not torch.isnan(layer.mlp.shared_experts.gate_weight).any(), "NaN in gate_weight"
+        assert not torch.isinf(layer.mlp.shared_experts.gate_weight).any(), "Inf in gate_weight"
 
 def set_layer_state(args, model, hf_model, layer_idx):
     '''Set transformer layer params.'''
@@ -136,28 +159,21 @@ def set_layer_state(args, model, hf_model, layer_idx):
     set_mlp_state(args, layer, hf_layer)
 
     layer.self_attention.linear_qkv.layer_norm_weight.data.copy_(hf_layer.input_layernorm.weight)
-    #  layer.self_attention.linear_qkv is TELayerNormColumnParallelLinear
-    print("layer.self_attention.linear_qkv")
-    for name, param in layer.self_attention.linear_qkv.named_parameters():
-        print(name, param.shape)
-
     layer.pre_mlp_layernorm.weight.data.copy_(hf_layer.post_attention_layernorm.weight)
 
 def load_checkpoint_to_model(args):
     '''Set model params.'''
 
     from pretrain_gpt import model_provider
-    from transformers import MixtralForCausalLM, MixtralConfig
+    from transformers import AutoModelForCausalLM, AutoConfig
 
     # Load Huggingface model.
 
-    hf_model = MixtralForCausalLM.from_pretrained(args.load, device_map="cpu")
-    print("hf model")
-    print(hf_model)
+    hf_model = AutoModelForCausalLM.from_pretrained(args.load, device_map="cpu")
+    print("hf_model",hf_model)
     # Init Megatron model.
     model = model_provider(True, True).to(args.params_dtype)
-    print("mg model")
-    print(model)
+    print("model",model)
     # Set model state.
     set_preprocess_state(args, model, hf_model)
     set_postprocess_state(args, model, hf_model)
@@ -286,7 +302,7 @@ def _load_checkpoint(queue, args):
     md.consumed_valid_samples = 0
     md.num_experts = margs.num_experts
     # [modified]
-    md.qkv_bias =  False
+    md.qkv_bias =  True
     # Get first pipe stage.
     mpu.set_tensor_model_parallel_rank(0)
     mpu.set_pipeline_model_parallel_rank(0)
@@ -321,6 +337,8 @@ def _load_checkpoint(queue, args):
 
         # Simple concat of the rest.
         message["qkv weight"] = layer.self_attention.linear_qkv.weight.data
+        # [modified]
+        message["qkv bias"] = layer.self_attention.linear_qkv.bias.data
         message["dense weight"] = layer.self_attention.linear_proj.weight.data
 
         # Grab all parallel tensors for this layer.
@@ -330,15 +348,18 @@ def _load_checkpoint(queue, args):
         message["router weight"] = layer.mlp.router.weight.data
         if md.swiglu:
             chunked_mlp_l0_weight =  [torch.chunk(local_expert.linear_fc1.weight.data, 2, dim=0) for local_expert in experts]
-           
             message["mlp l0 weight W"] = torch.stack([local_weight[0] for local_weight in chunked_mlp_l0_weight], dim=0)
             message["mlp l0 weight V"] = torch.stack([local_weight[1] for local_weight in chunked_mlp_l0_weight], dim=0)
         else:
             message["mlp l0 weight"] = torch.stack([local_expert.linear_fc1.weight.data for local_expert in experts])
         message["mlp l1 weight"] = torch.stack([local_expert.linear_fc2.weight.data for local_expert in experts], dim=0)
-        print("check_sparsity")
-        check_sparsity(message["mlp l1 weight"])
+        # add shared experts
+        # message["mlp shared experts fc1 weight"] = layer.mlp.shared_experts.linear_fc1.weight.data
+        # message["mlp shared experts fc2 weight"] = layer.mlp.shared_experts.linear_fc2.weight.data
+        # message["mlp shared experts gate weight"] = layer.mlp.shared_experts.gate_weight
+        # print("[Debug] Keys sent from loader:", list(message.keys()))
 
+        
         queue_put(f"transformer layer {layer_idx}", message)
 
     queue_put("final norm", {
