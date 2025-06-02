@@ -92,7 +92,10 @@ class MoELayer(BaseMoELayer):
         layer_number: Optional[int] = None,
     ):
         self.submodules = submodules
+        if int(os.getenv("EPLB", "0")) == 1:
+            config = copy.deepcopy( config)
         super(MoELayer, self).__init__(config=config, layer_number=layer_number)
+        
         self.moe_layer_recompute = (
             config.recompute_granularity == 'selective' and "moe" in config.recompute_modules
         )
@@ -187,6 +190,7 @@ class MoELayer(BaseMoELayer):
         # Save the original global expert indices before adding auxiliary experts
         self.original_global_expert_indices  =  list(range(self.config.num_moe_experts))
         # Update global expert count to include auxiliary experts
+        self.old_num_moe_experts = self.config.num_moe_experts
         self.config.num_moe_experts += self.eplb_para["num_replica"]
         # Each rank adds 1 local expert (the auxiliary one)
         self.num_local_experts += self.eplb_para["replicated_expert_per_rank"] 
@@ -228,6 +232,7 @@ class MoELayer(BaseMoELayer):
         # Remap weight values based on the new expert assignment
         self.eplb_modify_weights()
     def eplb_modify_weights(self):
+       
         assert self.new_global_expert_indices != None
         assert self.auxiliary_cpu_experts_weight != None
         # Determine current rank's expert slice in the global expert mapping
@@ -254,6 +259,7 @@ class MoELayer(BaseMoELayer):
                 fc2_local.data.copy_(fc2_global)
          
     def replicate_modify_weights(self):
+        
         if self.replicate_weights_ready:
             print(f"[RANK {self.ep_rank}] Already Update New expert weight")
             return 
@@ -297,7 +303,7 @@ class MoELayer(BaseMoELayer):
         def custom_forward(hidden_states):
             rank = dist.get_rank()
             if int(os.getenv("DEBUG", "0")) == 1:
-                print(f"RANK[{rank}] : hidden_states.shape = {hidden_states.shape}")
+                print(f"RANK[{rank}] layer {self.layer_number} : hidden_states.shape = {hidden_states.shape}")
             if int(os.getenv("REPLICATE", "0")) == 1:
                 self.replicate_modify_weights()
             if int(os.getenv("EPLB", "0")) == 1:
@@ -306,25 +312,23 @@ class MoELayer(BaseMoELayer):
                     path = os.getenv("EXPERT_PATH")
                     assert path is not None, "When EPLB=1, the environment variable 'EXPERT_PATH' must be set."
                     print("self.layer_number",self.layer_number)
-                    self.auxiliary_cpu_experts_weight = load_expert_cpu(path,self.layer_number)
+                    self.auxiliary_cpu_experts_weight = load_expert_cpu(path, self.old_num_moe_experts,self.layer_number)
            
             probs, routing_map = self.router(hidden_states)
-            
-            
+            if int(os.getenv("SKEW", "0")) == 1:
+                # create imbalanced routing_map
+                get_imbalanced_routing_map(
+                    routing_map, expert_id=0, enforce_row_count= 1000
+                )
             if int(os.getenv("IDEAL", "0")) == 1:
                 # create ideal routing_map
-                idel_routing_map,_ = generate_balanced_routing_map(
+                idel_routing_map,_ = get_balanced_routing_map(
                     token_num = hidden_states.shape[0]*hidden_states.shape[1],
                     num_experts = self.config.num_moe_experts ,
                     topk = self.config.moe_router_topk,
                     device =  hidden_states.device 
                 )
                 routing_map = idel_routing_map
-            if int(os.getenv("SKEW", "0")) == 1:
-                # create imbalanced routing_map
-                get_imbalanced_routing_map(
-                    routing_map, expert_id=0, enforce_row_count= 1000
-                )
             if int(os.getenv("REPLICATE", "0")) == 1:
                 # === Workload Migration Phase for Expert Replication ===
                 # Expert layout:
@@ -364,11 +368,11 @@ class MoELayer(BaseMoELayer):
                 self.eplb(routing_map)
                 # update probs, routing_map
                 if self.ep_rank==0:
-                    print("before",  routing_map.sum(dim=0).unsqueeze(0)   )
-                routing_map = eplb_modify(self.original_global_expert_indices,self.new_global_expert_indices, routing_map)
-                probs = eplb_modify(self.original_global_expert_indices,self.new_global_expert_indices, probs)
+                    print("before eplb", routing_map.sum(dim=0).float() ,  "Std", routing_map.sum(dim=0).float().std().item() )
+                routing_map = eplb_modify(self.original_global_expert_indices,self.new_global_expert_indices, routing_map, self.config.moe_router_topk)
+                probs = eplb_modify(self.original_global_expert_indices,self.new_global_expert_indices, probs,self.config.moe_router_topk)
                 if self.ep_rank==0:
-                    print("after",  routing_map.sum(dim=0).unsqueeze(0)   )
+                    print("after eplb",  routing_map.sum(dim=0).float() , "Std", routing_map.sum(dim=0).float().std().item()   )
             ##############################################################
             if int(os.getenv("MOE_TIME", "0")) == 1:
                 start_event = torch.cuda.Event(enable_timing=True)
@@ -390,7 +394,7 @@ class MoELayer(BaseMoELayer):
                 end_event.record()
                 torch.cuda.synchronize()
                 elapsed = start_event.elapsed_time(end_event)
-                print(f"RANK[{rank}] moe layer elapsed {elapsed} ms\n",)
+                print(f"RANK[{rank}] moe layer {self.layer_number} elapsed {elapsed} ms\n",)
             return output, mlp_bias
 
         if self.moe_layer_recompute:
@@ -398,16 +402,15 @@ class MoELayer(BaseMoELayer):
         else:
             output, mlp_bias = custom_forward(hidden_states)
   
-
-        if int(os.getenv("REPLICATE", "0")) == 0 and int(os.getenv("EPLB", "0")) == 0  :
-            torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/test/{get_rank()}.pt")
-        if int(os.getenv("REPLICATE", "0")) == 1:
-            torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/test/{get_rank()}_REPLICATE.pt")
-        if int(os.getenv("EPLB", "0")) == 1:
-            torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/test/{get_rank()}_EPLB.pt")
+        # if int(os.getenv("REPLICATE", "0")) == 0 and int(os.getenv("EPLB", "0")) == 0  :
+        #     torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/test/{get_rank()}.pt")
+        # if int(os.getenv("REPLICATE", "0")) == 1:
+        #     torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/test/{get_rank()}_REPLICATE.pt")
+        # if int(os.getenv("EPLB", "0")) == 1:
+        #     torch.save(output, f"/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/test/{get_rank()}_EPLB.pt")
         return output, mlp_bias
 
-def generate_balanced_routing_map(token_num, num_experts, topk,device):
+def get_balanced_routing_map(token_num, num_experts, topk,device):
     assert topk <= num_experts, "topk must be ≤ num_experts"
 
     routing_map = torch.zeros((token_num, num_experts), dtype=torch.bool)
@@ -437,7 +440,7 @@ def get_imbalanced_routing_map(routing_map: torch.Tensor, expert_id: int, enforc
             routing_map[i] = row  # 写回
     return routing_map
 
-def eplb_modify( original_indices , new_indices, data) -> torch.Tensor:
+def eplb_modify( original_indices , new_indices, data, topk) -> torch.Tensor:
     """
     Modify token-to-expert routing map after EPLB (Expert Load Balancing).
 
@@ -488,15 +491,15 @@ def eplb_modify( original_indices , new_indices, data) -> torch.Tensor:
     row_sum = final_result.sum(dim=1)
 
     if data.dtype == torch.bool: # for router map 
-        assert torch.all(row_sum == 2), (
-            f"[EPLB Modify Error] Not all tokens are routed to exactly 2 experts! "
+        assert torch.all(row_sum == topk), (
+            f"[EPLB Modify Error] Not all tokens are routed to exactly {topk} experts! "
             f"Min: {row_sum.min().item()}, Max: {row_sum.max().item()}"
         )
     else: # for probs
-        assert torch.all(row_sum == 1), (
-            f"[EPLB Modify Error] Not all tokens are routed to exactly 2 experts! "
-            f"Min: {row_sum.min().item()}, Max: {row_sum.max().item()}"
-        )
+        assert torch.allclose(row_sum, torch.ones_like(row_sum)), (
+                f"[EPLB Modify Error] Token probabilities do not sum to 1! "
+                f"Min: {row_sum.min().item()}, Max: {row_sum.max().item()}"
+            )
     return final_result
     
     
@@ -529,32 +532,76 @@ def replicate_modify(data: torch.Tensor, world: int, replicated_num:int, ) -> to
      
     return new_data
 
-def load_expert_cpu(path,layer):
+def load_expert_cpu(path,num_experts,layer):
     """
     Load expert weights for a specific layer from a saved model checkpoint into CPU memory.
 
     Args:
-        path (str): Path to the checkpoint file (e.g., model_optim_rng.pt).
+        path (str): Path to the checkpoint file  
         layer (int): 1-based layer index to load expert weights from (e.g., layer=1 for decoder.layers.0).
 
     Returns:
         dict: A dictionary mapping keys like "linear_fc1.weight0" to their corresponding expert tensors.
     """
+    #TODO: for other models, may be different 
     print("Preload expert weights to CPU for Layer ",layer)
-    # Load full model checkpoint from disk to CPU 
-    state  = torch.load(path,map_location="cpu", weights_only=False)
-    model_state = state["model"]
+    
+   
+    target_name = 'model_optim_rng.pt'
+    if not os.path.exists(path):
+        print(f"not exist: {path}")
+    all_paths = []
+    for dirpath, dirnames, filenames in os.walk(path):
+        if target_name in filenames:
+            full_path = os.path.join(dirpath, target_name)
+            all_paths.append(full_path)
+    print(all_paths)
+    match = re.search(r'TP(\d+)PP(\d+)EP(\d+)', path)
+    if match:
+        tp = int(match.group(1))
+        pp = int(match.group(2))
+        ep = int(match.group(3))
+        print(f"TP: {tp}, PP: {pp}, EP: {ep}")
+    else:
+        print("Format not matched.")
+    assert tp == 1 and pp == 1, f"Assertion failed: tp={tp}, pp={pp}. Only EP is enabled."
     new_state = {}
-    # Traverse all parameters and extract those belonging to experts in the specified layer
-    for k, v in model_state.items():
-        if "experts" in k and "_extra_state" not in k:
-            # e.g. `linear_fc1.weight7` or `linear_fc2.weight7`
-            parts = k.split(".")
-            layer_id = int(parts[2])
-            # Note: `layer` (self.layer_number) is 1-based, but the model key uses 0-based indexing
-            if layer_id == layer - 1:
-                new_key = ".".join(k.split("experts.")[-1].split(".")[-2:])
-                new_state[new_key] = v
-                # print(f"{k} --> {new_key}", v.shape,v.device)
-    # print(new_state.keys())
+    
+    for p in all_paths:
+        # Load full model checkpoint from disk to CPU 
+        print(p)
+        world_size = ep
+        match = re.search(r'mp_rank_\d+_(\d+)', p)
+        if match:
+            ep_rank = int(match.group(1)) 
+            print(f"world_size: {world_size} , ep_rank: {ep_rank}")
+        else:
+            print("No match found.")
+        expert_indices = list(range( num_experts)) 
+        num_local_experts = int(num_experts // world_size)
+        start_idx = ep_rank * num_local_experts
+        end_idx = start_idx + num_local_experts
+        local_expert_indices = expert_indices[start_idx:end_idx]
+        print(f"Total experts: {num_experts}")
+        print(f"World size (EP): {world_size}")
+        print(f"EP rank: {ep_rank}")
+        print(f"Experts per rank: {num_local_experts}")
+        print(f"Local expert indices: {local_expert_indices}")
+        # Traverse all parameters and extract those belonging to experts in the specified layer
+        state  = torch.load(p,map_location="cpu", weights_only=False)
+        model_state = state["model"]
+        for k, v in model_state.items():
+            if ".experts." in k and "_extra_state" not in k:
+                # e.g. `linear_fc1.weight7` or `linear_fc2.weight7`
+                parts = k.split(".")
+                layer_id = int(parts[2])
+                # Note: `layer` (self.layer_number) is 1-based, but the model key uses 0-based indexing
+                if layer_id == layer - 1:
+                    new_key = ".".join(k.split("experts.")[-1].split(".")[-2:])
+                    match = re.search(r'linear_fc[12]\.weight(\d+)$', new_key)
+                    expert_id = int(match.group(1))
+                    global_id = local_expert_indices [expert_id]
+                    new_key = re.sub(r'(linear_fc[12]\.weight)\d+$', lambda m: f"{m.group(1)}{global_id}", new_key)
+                    print(k, "-->" , new_key)
+                    new_state[new_key] = v
     return  new_state

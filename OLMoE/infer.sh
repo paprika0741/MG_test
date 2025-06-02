@@ -4,7 +4,7 @@ export DEBUG=1
 export EPLB=0
 export REPLICATE=0
 export OLMoE=0
-Layer=16
+Layer=1
 DISTRIBUTED_ARGS="--nproc_per_node 4 \
                   --nnodes 1 \
                   --node_rank 0 \
@@ -12,8 +12,11 @@ DISTRIBUTED_ARGS="--nproc_per_node 4 \
                   --master_port 6000"
 CHECKPOINT="/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/OLMoE/mcore-TP1PP1EP4Layer${Layer}"
 TOKENIZER_MODEL="/home/ec2-user/models/OLMoE-1B-7B-0125-Instruct" 
-
+export EXPERT_PATH=${CHECKPOINT}
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
 export CUDA_DEVICE_MAX_CONNECTIONS=1
+NCCL_DEBUG=INFO
+
 torchrun $DISTRIBUTED_ARGS ../tools/run_text_generation_server.py   \
        --port 5000 \
        --tensor-model-parallel-size 1  \

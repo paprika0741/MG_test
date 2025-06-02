@@ -9,8 +9,8 @@ TARGET_EP_SIZE="4"
 TARGET_PP_SIZE="1"
  
 HF_FORMAT_DIR=/mnt/data/Qwen1.5-MoE-A2.7B-Chat
-MEGATRON_FORMAT_DIR=/mnt/data/mcore-TP${TARGET_TP_SIZE}PP${TARGET_PP_SIZE}EP${TARGET_EP_SIZE}
-# MEGATRON_FORMAT_DIR=/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/Qwen/mcore-TP${TARGET_TP_SIZE}PP${TARGET_PP_SIZE}EP${TARGET_EP_SIZE}Layer1
+# MEGATRON_FORMAT_DIR=/mnt/data/mcore-TP${TARGET_TP_SIZE}PP${TARGET_PP_SIZE}EP${TARGET_EP_SIZE}
+MEGATRON_FORMAT_DIR=/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/Qwen/mcore-TP${TARGET_TP_SIZE}PP${TARGET_PP_SIZE}EP${TARGET_EP_SIZE}Layer1
 
 
 python ../tools/checkpoint/convert.py \
@@ -28,7 +28,16 @@ python ../tools/checkpoint/convert.py \
  
 if [ $? -eq 0 ]; then
     echo "Modify key of weights: $MEGATRON_FORMAT_DIR"
-    python modify_dict.py --root_dir $MEGATRON_FORMAT_DIR
+    python modify_dict.py --root_dir $MEGATRON_FORMAT_DIR --hf_path $HF_FORMAT_DIR
+    MODIFY_STATUS=$?
+
+    if [ $MODIFY_STATUS -eq 0 ]; then
+        echo "Check weights: $MEGATRON_FORMAT_DIR"
+        python check_weight_hf.py --root_dir $MEGATRON_FORMAT_DIR --hf_path $HF_FORMAT_DIR
+    else
+        echo "modify_dict.py failed, skipping check_weight_hf.py."
+    fi
 else
-    echo "Conversion failed, skipping modify_dict.py."
+    echo "Conversion failed, skipping modify_dict.py and check_weight_hf.py."
 fi
+
