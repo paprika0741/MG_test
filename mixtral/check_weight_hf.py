@@ -87,6 +87,7 @@ def check_hf(path):
                     print(torch.equal(mg_model_state[key], hf_layer.post_attention_layernorm.weight    ))
                 if "router" in  key:
                     print(torch.equal(mg_model_state[key], hf_mlp.gate.weight   ))
+                    print(mg_model_state[key].dtype)
                 if "experts.linear_fc" in  key:
                     hf_experts = hf_mlp.experts
                     match = re.search(r'weight(\d+)$', key)

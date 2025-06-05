@@ -15,8 +15,13 @@ onelogger.err
 *.pt
 *.txt
 *.log
-mixtral/dynamic_inferecne/*
 mixtral/EPLB/weight.py
 env.sh
 .gitignore
+disk.sh
+*.pdf
+*.png
+*.sh
 test/
+/Predict/*
+*/Predict/*

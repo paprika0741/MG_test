@@ -176,4 +176,3 @@ def check_hf_weight(path):
 for i in all_paths:
    
     check_hf_weight(i)
- 

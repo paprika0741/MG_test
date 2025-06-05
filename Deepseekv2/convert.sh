@@ -5,16 +5,18 @@ export EPLB=0
 export REPLICATE=0
 MEGATRON_PATH=/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0
 TOKENIZER_MODEL=/mnt/data/DeepSeek-V2-Lite
-# CHECKPOINT="/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/Deepseekv2/mcore-TP1PP1EP4Layer2"
-CHECKPOINT=/mnt/data/Deepseekv2/mcore-TP1PP1EP4
+HF_FORMAT_DIR=/mnt/data/DeepSeek-V2-Lite
+# MEGATRON_FORMAT_DIR="/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/Deepseekv2/mcore-TP1PP1EP4Layer2"
+MEGATRON_FORMAT_DIR="/mnt/data/Deepseekv2/mcore-TP1PP1EP4"
 export PYTHONPATH=$MEGATRON_PATH:$PYTHONPATH
 export CUDA_DEVICE_MAX_CONNECTIONS=1
+
+rm -rf $MEGATRON_FORMAT_DIR
 
 DISTRIBUTED_ARGS="--nproc_per_node 4 \
                   --nnodes 1 \
                   --node_rank 0 \
-                  --master_addr localhost \
-                  --master_port 6000"
+                  --master_addr localhost"
 
 MODEL_ARGS=" \
     --save-interval 100000 \
@@ -70,10 +72,8 @@ MODEL_ARGS=" \
     --group-query-attention \
     --num-query-groups 16
 "
-  
 
-torchrun $DISTRIBUTED_ARGS ../tools/run_text_generation_server.py   \
-       --port 5000 \
+torchrun $DISTRIBUTED_ARGS  create_model.py  \
         --no-masked-softmax-fusion \
        --tensor-model-parallel-size 1 \
        --pipeline-model-parallel-size 1 \
@@ -82,5 +82,21 @@ torchrun $DISTRIBUTED_ARGS ../tools/run_text_generation_server.py   \
        --vocab-size 102400 \
        --no-rope-fusion \
        --no-gradient-accumulation-fusion \
-       --load ${CHECKPOINT} \
+       --save $MEGATRON_FORMAT_DIR \
        $MODEL_ARGS
+
+if [ $? -eq 0 ]; then
+    echo "Modify key of weights: $MEGATRON_FORMAT_DIR"
+    python modify_dict.py --root_dir $MEGATRON_FORMAT_DIR --hf_path $HF_FORMAT_DIR
+    MODIFY_STATUS=$?
+
+    if [ $MODIFY_STATUS -eq 0 ]; then
+        echo "Check weights: $MEGATRON_FORMAT_DIR"
+        python check_weight_hf.py --root_dir $MEGATRON_FORMAT_DIR --hf_path $HF_FORMAT_DIR
+    else
+        echo "modify_dict.py failed, skipping check_weight_hf.py."
+    fi
+else
+    echo "Conversion failed, skipping modify_dict.py and check_weight_hf.py."
+fi
+

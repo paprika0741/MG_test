@@ -29,6 +29,7 @@ from megatron.training.checkpointing import save_checkpoint
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir))
 )
+from argparse import Namespace
 
 from megatron.core import mpu
 from megatron.training import get_args, get_model, get_tokenizer
@@ -71,16 +72,30 @@ if __name__ == "__main__":
         #     print(name, param.shape)
     ep_rank = mpu.get_expert_model_parallel_rank()
     model_dict = state_dict = model[0].module.state_dict()
-    
-    state = dict()
+    rerun_state_machine =  dict()
+    # according to the checkpoint of mixtral
     state = {
-        "model": model_dict
+        "model": model_dict,
+        "checkpoint_version": 3.0,
+        "iteration":1,
+        "args": args,
+        "num_floating_point_operations_so_far":0,
+        "rerun_state_machine" :rerun_state_machine
     }
     save_dir = args.save
     path = os.path.join(save_dir, f"iter_0000001/mp_rank_00_00{ep_rank}", "model_optim_rng.pt")
+    print("save empty weight")
     print("save to ",path)
+    print("keys",state.keys() )
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(state, path)
     dist.barrier()
     if ep_rank == 0:
         print("All ranks have finished saving.")
+        
+    # create file latest_checkpointed_iteration.txt
+    tracker_file = os.path.join(save_dir, "latest_checkpointed_iteration.txt")
+    with open(tracker_file, "w") as f:
+        f.write("1")
+
+    

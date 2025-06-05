@@ -116,14 +116,14 @@ def plot_all_layers_latency_cdf(df, total_layers, real_data=True):
     plt.suptitle("Latency CDF per MOE Layer (RANK[0])", fontsize=16)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     if real_data:
-        plt.savefig("all_layers_latency_cdf_Real_data.png")
+        plt.savefig("all_layers_latency_cdf_Real_data.pdf")
     else:
-        plt.savefig("all_layers_latency_cdf_Artificial_data.png")
+        plt.savefig("all_layers_latency_cdf_Artificial_data.pdf")
     plt.close()
 
 file_list = glob.glob("*.log")
 print("Found .log files:", file_list)
-warm_up_sample = 10
+warm_up_sample = 20
 parse_shape_counts(file_list[0], warm_up_sample)
 layer_num = 8
 data = []
@@ -141,11 +141,13 @@ plot_all_layers_latency_cdf(df, total_layers=layer_num, real_data=True)
 plot_all_layers_latency_cdf(df, total_layers=layer_num, real_data=False)
 for layer_id in range(1,layer_num + 1):
     filtered_df = df[df["layer_id"] == layer_id ]
-    print(filtered_df)
+    # print(filtered_df)
+    print("======================================")
     for data_type in ["Real data", "Artificial data"]:
         megatron_row = filtered_df[filtered_df["tag"] == f"{data_type}+Megatron"]
         ideal_row = filtered_df[filtered_df["tag"] == f"{data_type}+IDEAL"]
         eplb_row = filtered_df[filtered_df["tag"] == f"{data_type}+EPLB"]
+        
         if not megatron_row.empty and not ideal_row.empty:
             avg_megatron = np.mean(megatron_row["times"].values[0])
             avg_ideal = np.mean(ideal_row["times"].values[0])

@@ -13,8 +13,8 @@ echo "EPLB=$EPLB"
 echo "REPLICATE=$REPLICATE"
 echo "LOG_FILE = $LOG_FILE"
  
-if [ "$REPLICATE" -eq 1 ] && [ "$SKEW" -eq 1 ]; then
-    echo "Error: REPLICATE and SKEW cannot both be 1."
+if [ "$REPLICATE" -eq 1 ] && [ "$EPLB" -eq 1 ]; then
+    echo "Error: REPLICATE and EPLB cannot both be 1."
     exit 1
 fi
 

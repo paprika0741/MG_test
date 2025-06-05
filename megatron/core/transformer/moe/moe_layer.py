@@ -227,7 +227,8 @@ class MoELayer(BaseMoELayer):
                                                 self.eplb_para["num_gpus"])
         # Store new expert placement 
         self.new_global_expert_indices = phy2log.flatten().tolist()
-        print("After EPLB, new_global_expert_indices: ", self.new_global_expert_indices)
+        if self.ep_rank == 0:
+            print("After EPLB, new_global_expert_indices: ", self.new_global_expert_indices)
        
         # Remap weight values based on the new expert assignment
         self.eplb_modify_weights()
@@ -313,7 +314,7 @@ class MoELayer(BaseMoELayer):
                     assert path is not None, "When EPLB=1, the environment variable 'EXPERT_PATH' must be set."
                     print("self.layer_number",self.layer_number)
                     self.auxiliary_cpu_experts_weight = load_expert_cpu(path, self.old_num_moe_experts,self.layer_number)
-           
+            
             probs, routing_map = self.router(hidden_states)
             if int(os.getenv("SKEW", "0")) == 1:
                 # create imbalanced routing_map
