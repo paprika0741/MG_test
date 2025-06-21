@@ -54,7 +54,9 @@ def load_args_from_checkpoint(args):
  
     args.moe_ffn_hidden_size = config.moe_intermediate_size
     args.moe_shared_expert_intermediate_size = config.shared_expert_intermediate_size
+    args.moe_router_dtype = "fp32" 
     #TODO:
+    args.moe_router_pre_softmax = True 
     args.moe_use_shared_expert_gate = True  # [modified]
     args.ffn_hidden_size = config.intermediate_size
     args.num_experts = config.num_experts
@@ -168,17 +170,32 @@ def load_checkpoint_to_model(args):
     from transformers import AutoModelForCausalLM, AutoConfig
 
     # Load Huggingface model.
+    print("[DEBUG] Loading HF model from:", args.load)
 
     hf_model = AutoModelForCausalLM.from_pretrained(args.load, device_map="cpu")
     print("hf_model",hf_model)
+    print("[DEBUG] HF model loaded.")
+
     # Init Megatron model.
+    print("[DEBUG] Initializing Megatron model...")
+
     model = model_provider(True, True).to(args.params_dtype)
     print("model",model)
+    print("[DEBUG] Megatron model initialized.")
+
     # Set model state.
+    print("[DEBUG] Setting embedding weights...")
+    print("[DEBUG] set_preprocess_state")
+
     set_preprocess_state(args, model, hf_model)
+    
+    print("[DEBUG] set_postprocess_state")
+
     set_postprocess_state(args, model, hf_model)
     for layer_idx in tqdm(range(args.num_layers), "set layer states"):
+        print(f"[DEBUG] setting layer {layer_idx}")
         set_layer_state(args, model, hf_model, layer_idx)
+    print("[DEBUG] All transformer layers set.")
     return model
 
 

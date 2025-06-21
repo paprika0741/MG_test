@@ -11,8 +11,8 @@ def get_param_name(model, target_param):
             return name
     return None  # 如果找不到，返回 None
 parser = argparse.ArgumentParser(description='Modify model checkpoint file paths.')
-parser.add_argument('--root_dir', type=str,  help='Root directory containing model files', default="/mnt/data/mcore-TP1PP1EP4")
-parser.add_argument('--hf_path', type=str,  help='Root directory containing model files', default="/mnt/data/Qwen1.5-MoE-A2.7B-Chat")
+parser.add_argument('--root_dir', type=str,  help='Root directory containing model files', default="/home/download/models/mg_core/Qwen1.5-MoE-A2.7B-Chat/mcore-TP1PP1EP4")
+parser.add_argument('--hf_path', type=str,  help='Root directory containing model files', default="/home/download/models/Qwen1.5-MoE-A2.7B-Chat")
 args = parser.parse_args()
 root_dir = args.root_dir
 hf_path =  args.hf_path

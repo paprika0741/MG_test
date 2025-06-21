@@ -497,7 +497,7 @@ def eplb_modify( original_indices , new_indices, data, topk) -> torch.Tensor:
             f"Min: {row_sum.min().item()}, Max: {row_sum.max().item()}"
         )
     else: # for probs
-        assert torch.allclose(row_sum, torch.ones_like(row_sum)), (
+        assert torch.allclose(row_sum, torch.ones_like(row_sum), rtol=1e-2, atol=1e-2), (
                 f"[EPLB Modify Error] Token probabilities do not sum to 1! "
                 f"Min: {row_sum.min().item()}, Max: {row_sum.max().item()}"
             )

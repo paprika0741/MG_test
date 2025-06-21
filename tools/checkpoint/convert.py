@@ -158,14 +158,15 @@ def main():
     print("Starting saver...")
     saver_proc = mp.Process(target=saver.save_checkpoint, args=(queue, args))
     saver_proc.start()
-
+    print("=== Saver process started ===")
     # Run loader.
     print("Starting loader...")
     loader.load_checkpoint(queue, args)
-
+    print("=== Loader completed ===")
     # Finish saver process.
     print("Waiting for saver to complete...")
     saver_proc.join()
+    print("=== All done ===")
 
 
 if __name__ == '__main__':

@@ -3,7 +3,6 @@
 """Sample Generate"""
 import os
 import sys
-
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
 import os
 import sys
@@ -48,8 +47,7 @@ from megatron.training import get_args, get_model, get_tokenizer
 from megatron.training.checkpointing import load_checkpoint
 from megatron.training.initialize import initialize_megatron
 from pretrain_gpt import model_provider
-
-
+import torch.distributed as dist
 
 def get_inference_engine(args: Namespace, model: MegatronModule) -> AbstractEngine:
     """Get the relevant backend for running inference
@@ -127,6 +125,7 @@ if __name__ == "__main__":
     )
 
     args = get_args()
+    args.padded_vocab_size = args.vocab_size
     if args.num_layers_per_virtual_pipeline_stage is not None:
         print("Interleaved pipeline schedule is not yet supported for text generation.")
         exit()
@@ -144,7 +143,8 @@ if __name__ == "__main__":
     if args.load is not None:
         print("Load weight ...")
         _ = load_checkpoint(model, None, None)
-
+    else:
+        print("\033[91m***** WARNING: No checkpoint specified. *****\033[0m")
     assert len(model) == 1, "Above condition should have caught this"
     model = model[0]
     model.eval()
@@ -161,12 +161,16 @@ if __name__ == "__main__":
     if mpu.is_pipeline_first_stage() and mpu.get_tensor_model_parallel_rank() == 0 and mpu.get_expert_model_parallel_rank() == 0:
         server = MegatronServer(inference_engine, args)
         server.run("0.0.0.0", port=args.port)
+    rank = dist.get_rank()
 
     while True:
-        choice = torch.tensor(1, dtype=torch.long, device='cuda')
+        if torch.distributed.get_rank() == 0:
+            choice = torch.tensor([1], dtype=torch.long, device='cuda')
+        else:
+            choice = torch.empty(1, dtype=torch.long, device='cuda')
         torch.distributed.broadcast(choice, 0)
         if choice.item() == 0:
             try:
                 run_mcore_engine(inference_engine)
-            except ValueError as ve:
-                pass
+            except Exception as e:
+                print(f"[Rank {rank}] generation failed: {str(e)}")

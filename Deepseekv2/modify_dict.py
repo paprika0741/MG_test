@@ -27,7 +27,7 @@ for dirpath, dirnames, filenames in os.walk(root_dir):
     if target_name in filenames:
         full_path = os.path.join(dirpath, target_name)
         all_paths.append(full_path)
-def check_hf_weight(path):
+def copy_hf_weight(path):
     checked_keys = set()
     match = re.search(r'TP(\d+)PP(\d+)EP(\d+)', path)
     if match:
@@ -175,4 +175,4 @@ def check_hf_weight(path):
 
 for i in all_paths:
    
-    check_hf_weight(i)
+    copy_hf_weight(i)

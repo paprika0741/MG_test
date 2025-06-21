@@ -23,5 +23,13 @@ disk.sh
 *.png
 *.sh
 test/
-/Predict/*
-*/Predict/*
+**/Predict/*
+**/Predict/*
+Qwen/convert/*
+Qwen3-30B-A3B/*
+utils/*
+**/download.py
+**/convert.sh
+**/mixtral/convert/*
+**/test_time_BoolQ/*
+**/EPLB/*

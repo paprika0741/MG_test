@@ -3,11 +3,11 @@ export IDEAL=0
 export DEBUG=1
 export EPLB=0
 export REPLICATE=0
-MEGATRON_PATH=/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0
-TOKENIZER_MODEL=/mnt/data/DeepSeek-V2-Lite
-HF_FORMAT_DIR=/mnt/data/DeepSeek-V2-Lite
+MEGATRON_PATH=/home/CodeSpace/Megatron-LM-core_v0.12.0
+TOKENIZER_MODEL="/home/download/models/DeepSeek-V2-Lite"
+HF_FORMAT_DIR="/home/download/models/DeepSeek-V2-Lite"
 # MEGATRON_FORMAT_DIR="/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/Deepseekv2/mcore-TP1PP1EP4Layer2"
-MEGATRON_FORMAT_DIR="/mnt/data/Deepseekv2/mcore-TP1PP1EP4"
+MEGATRON_FORMAT_DIR="/home/download/models/mg_core/DeepSeek-V2-Lite/mcore-TP1PP1EP4"
 export PYTHONPATH=$MEGATRON_PATH:$PYTHONPATH
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
@@ -70,7 +70,8 @@ MODEL_ARGS=" \
     --mscale-all-dim 0.707 \
     --sequence-parallel \
     --group-query-attention \
-    --num-query-groups 16
+    --num-query-groups 16 \
+    --moe-router-dtype "fp32"
 "
 
 torchrun $DISTRIBUTED_ARGS  create_model.py  \
@@ -86,7 +87,7 @@ torchrun $DISTRIBUTED_ARGS  create_model.py  \
        $MODEL_ARGS
 
 if [ $? -eq 0 ]; then
-    echo "Modify key of weights: $MEGATRON_FORMAT_DIR"
+    echo "Modify weights: $MEGATRON_FORMAT_DIR"
     python modify_dict.py --root_dir $MEGATRON_FORMAT_DIR --hf_path $HF_FORMAT_DIR
     MODIFY_STATUS=$?
 

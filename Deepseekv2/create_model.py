@@ -71,7 +71,7 @@ if __name__ == "__main__":
         # for name, param in model[0].module.named_parameters():
         #     print(name, param.shape)
     ep_rank = mpu.get_expert_model_parallel_rank()
-    model_dict = state_dict = model[0].module.state_dict()
+    model_dict = model[0].module.state_dict()
     rerun_state_machine =  dict()
     # according to the checkpoint of mixtral
     state = {
@@ -84,9 +84,9 @@ if __name__ == "__main__":
     }
     save_dir = args.save
     path = os.path.join(save_dir, f"iter_0000001/mp_rank_00_00{ep_rank}", "model_optim_rng.pt")
+    print("keys",state.keys() )
     print("save empty weight")
     print("save to ",path)
-    print("keys",state.keys() )
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(state, path)
     dist.barrier()

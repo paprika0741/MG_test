@@ -2,7 +2,7 @@ import torch
 import os
 import argparse
 parser = argparse.ArgumentParser(description='Modify model checkpoint file paths.')
-parser.add_argument('--root_dir', type=str, help='Root directory containing model files', default="/mnt/data/mcore-TP1PP1EP4")
+parser.add_argument('--root_dir', type=str, help='Root directory containing model files', default="/mnt/data/Qwen/mcore-TP1PP1EP4")
 args = parser.parse_args()
 root_dir = args.root_dir
 # this is only for mixtral

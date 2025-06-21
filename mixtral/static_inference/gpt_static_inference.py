@@ -9,6 +9,7 @@ import torch
 import sys
 import time
 import tqdm
+import random
 import warnings
 from argparse import Namespace
 from megatron.core.inference.contexts import StaticInferenceContext
@@ -21,11 +22,13 @@ from megatron.core.inference.inference_request import InferenceRequest
 from megatron.core.inference.text_generation_controllers.text_generation_controller import (
     TextGenerationController,
 )
+from transformers import AutoTokenizer
 from megatron.core.transformer.module import MegatronModule
 
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir))
 )
+from datasets import load_dataset
 
 from megatron.training import get_args
 from megatron.training import get_tokenizer
@@ -174,10 +177,46 @@ def add_static_inference_args(parser):
     )
     group.add_argument("--stream", action="store_true", default=False, help="Stream output tokens")
     group.add_argument("--output-path", type=str, default='/tmp/output.json', help="Path to save generations as JSON")
+    group.add_argument("--dataset", type=str , default="lmsys/lmsys-chat-1m", help="Dataset")
+    group.add_argument("--hf_path", type=str , default="/home/download/models/DeepSeek-V2-Lite", help="tokenizer")
+
 
     return parser
-
-
+def build_prompt_deepseek(conversation):
+    prompt = "<｜begin▁of▁sentence｜>\n"
+    for turn in conversation:
+        if turn["role"] == "user":
+            prompt += f"User: {turn['content'].strip()}\n\n"
+        elif turn["role"] == "assistant":
+            prompt += f"Assistant: {turn['content'].strip()}<｜end▁of▁sentence｜>\n"
+    prompt += "Assistant:"
+    return prompt
+def prepare_prompts(args):
+    dataset = load_dataset( "lmsys/lmsys-chat-1m", split="train")
+    sample_num = 400
+    random.seed(42) 
+    sample_indices = random.sample(range(len(dataset)),sample_num)
+    print(sample_indices)
+    samples = [dataset[i] for i in sample_indices]
+    if "DeepSeek" in args.hf_path:
+        prompts = [ build_prompt_deepseek(i["conversation"]) for  i in  samples ]
+    else:
+        raise NotImplementedError
+    tokenizer = AutoTokenizer.from_pretrained(args.hf_path)
+    filtered_prompts = []
+    len_list = []
+    for i in prompts:
+        tokens = tokenizer.encode(i)
+        token_count = len(tokens)
+        print(token_count)
+        if token_count < 2048:
+            len_list.append(token_count)
+            filtered_prompts.append(i)
+        if len(filtered_prompts) == 200:
+            break
+    print(len_list)
+    return filtered_prompts 
+    
 def get_inference_engine(args: Namespace, model: MegatronModule) -> StaticInferenceEngine:
     """Utility to get the relevant backend for running inference
 
@@ -268,102 +307,106 @@ def main():
     model = get_model(model_provider, wrap_with_ddp=False)
     load_checkpoint(model, None, None, strict=False)
     model = model[0]
-
     args = get_args()
-
     inference_engine = get_inference_engine(args, model)
-
-    sampling_params = SamplingParams(
-        temperature=args.temperature,
-        top_k=args.top_k,
-        top_p=args.top_p,
-        return_log_probs=args.return_log_probs,
-        num_tokens_to_generate=args.num_tokens_to_generate,
-        top_n_logprobs=args.top_n_logprobs,
-    )
-
-    requests = build_requests(args, get_tokenizer())
-    prompts = [ r.prompt_text for r in requests ]
-
-    if args.enable_cuda_graph:
-        print(f"Running warmup for CUDA graphs...")
-        inference_engine.generate(
-                prompts=prompts, sampling_params=sampling_params
-            )
-    start_time = time.perf_counter()
-    if args.stream:
-        results: List[InferenceRequest] = asyncio.run(generate(inference_engine, sampling_params, prompts))
-    else:
-        results: List[InferenceRequest] = inference_engine.generate(
-            prompts=prompts, sampling_params=sampling_params,
+    filtered_prompts = prepare_prompts (args)
+    for i in range(0,100):
+        if torch.distributed.get_rank() == 0:
+            print(f"================== {i} ==================")
+        sampling_params = SamplingParams(
+            temperature=args.temperature,
+            top_k=args.top_k,
+            top_p=args.top_p,
+            return_log_probs=args.return_log_probs,
+            num_tokens_to_generate= 40,
+            top_n_logprobs=args.top_n_logprobs,
         )
-    end_time = time.perf_counter()
-    latency = end_time - start_time
 
-    if torch.distributed.get_rank() == 0:
-        for idx, result in enumerate(results):
-            print(f' \n------------- RESULT FOR PROMPT {idx} --------------- ')
-            result_dict = {
-                'id': result.request_id,
-                'input_prompt': result.prompt,
-                'generated_text': result.generated_text,
-                'generated_tokens': result.generated_tokens,
-                'latency': latency,
-            }
-            if sampling_params.top_n_logprobs > 0 :
-                result_dict['generated_top_n_logprobs'] = result.generated_top_n_logprobs
-            if sampling_params.return_log_probs:
-                response_logprobs = result.prompt_log_probs + result.generated_log_probs
-                result_dict["logprobs"] = response_logprobs
+        # requests = build_requests(args, get_tokenizer())
+        prompts = [ filtered_prompts[i]  ]
 
-        # Write results to JSON. Primarily used for functional testing.
-        if args.output_path:
-            # Tensors cannot be serialized so we move these to CPU
-            result_dict['generated_tokens'] = result_dict['generated_tokens'].cpu().numpy().tolist()
-            results_as_json = json.dumps(result_dict)
-            output_dir = os.path.dirname(args.output_path)
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
-            with open(args.output_path, 'w') as f:
-                json.dump(results_as_json, f)
+        if args.enable_cuda_graph:
+            print(f"Running warmup for CUDA graphs...")
+            inference_engine.generate(
+                    prompts=prompts, sampling_params=sampling_params
+                )
+        start_time = time.perf_counter()
+        if args.stream:
+            results: List[InferenceRequest] = asyncio.run(generate(inference_engine, sampling_params, prompts))
+        else:
+            results: List[InferenceRequest] = inference_engine.generate(
+                prompts=prompts, sampling_params=sampling_params,
+            )
+        end_time = time.perf_counter()
+        latency = end_time - start_time
+        torch.distributed.barrier()
+        if torch.distributed.get_rank() == 0:
+            for idx, result in enumerate(results):
+                print(f' \n------------- RESULT FOR PROMPT {idx} --------------- ')
+                result_dict = {
+                    'id': result.request_id,
+                    'input_prompt': result.prompt,
+                    'generated_text': result.generated_text,
+                    'generated_tokens': result.generated_tokens,
+                    'latency': latency,
+                }
+                if sampling_params.top_n_logprobs > 0 :
+                    result_dict['generated_top_n_logprobs'] = result.generated_top_n_logprobs
+                if sampling_params.return_log_probs:
+                    response_logprobs = result.prompt_log_probs + result.generated_log_probs
+                    result_dict["logprobs"] = response_logprobs
 
-    # Print unique prompts + outputs.
-    if torch.distributed.get_rank() == 0:
-
-        print("~~~~ Unique prompts + outputs. ~~~~")
-
-        # Map results by their prompt.
-        from collections import defaultdict
-        unique_prompt_map = defaultdict(list)
-        for result_idx, result in enumerate(results):
-            unique_prompt_map[result.prompt].append(result_idx)
+            # Write results to JSON. Primarily used for functional testing.
+            if args.output_path:
+                # Tensors cannot be serialized so we move these to CPU
+                result_dict['generated_tokens'] = result_dict['generated_tokens'].cpu().numpy().tolist()
+                results_as_json = json.dumps(result_dict)
+                output_dir = os.path.dirname(args.output_path)
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                with open(args.output_path, 'w') as f:
+                    json.dump(results_as_json, f)
 
         # Print unique prompts + outputs.
-        for unique_idx, (prompt_text, result_idxs) in enumerate(unique_prompt_map.items()):
-            result_idx = result_idxs[0]
-            result = results[result_idx]
-            print(f"{unique_idx}/{len(unique_prompt_map)} [{len(result_idxs)}]. {prompt_text} ... %s" % result.generated_text.replace("\n", "\\n"))
+        if torch.distributed.get_rank() == 0:
+
+            print("~~~~ Unique prompts + outputs. ~~~~")
+
+            # Map results by their prompt.
+            from collections import defaultdict
+            unique_prompt_map = defaultdict(list)
+            for result_idx, result in enumerate(results):
+                unique_prompt_map[result.prompt].append(result_idx)
+
+            # Print unique prompts + outputs.
+            for unique_idx, (prompt_text, result_idxs) in enumerate(unique_prompt_map.items()):
+                result_idx = result_idxs[0]
+                result = results[result_idx]
+                text = result.generated_text.replace("\n", "\\n")
+                print(f"{unique_idx}/{len(unique_prompt_map)} [{len(result_idxs)}]. {prompt_text} ... {text}")
+
+                # print(f"{unique_idx}/{len(unique_prompt_map)} [{len(result_idxs)}]. {prompt_text} ... %s" % result.generated_text.replace("\n", "\\n"))
 
 
-    stats = torch.cuda.memory_stats()
-    print("static | cg %d | %s | reqs %d [ batch %d ] ... mem %.1f/%.1f ... time %.3f." % (
-        args.enable_cuda_graph,
-        (
-            f"<user prompts>"
-            if args.prompts else
-            "<auto prompts> %s, %d, %.1e, %.1e" % (
-                "(%s)" % " ".join(map(str, args.num_tokens_to_prompt)),
-                args.num_tokens_to_generate,
-                args.incoming_requests_duration,
-                args.incoming_requests_per_sec,
-            )
-        ),
-        len(requests),
-        args.inference_max_requests,
-        stats["allocated_bytes.all.peak"] / (1024**3),
-        stats["reserved_bytes.all.peak"] / (1024**3),
-        latency,
-    ))
+        stats = torch.cuda.memory_stats()
+        print("static | cg %d | %s | reqs %d [ batch %d ] ... mem %.1f/%.1f ... time %.3f." % (
+            args.enable_cuda_graph,
+            (
+                f"<user prompts>"
+                if args.prompts else
+                "<auto prompts> %s, %d, %.1e, %.1e" % (
+                    "(%s)" % " ".join(map(str, args.num_tokens_to_prompt)),
+                    args.num_tokens_to_generate,
+                    args.incoming_requests_duration,
+                    args.incoming_requests_per_sec,
+                )
+            ),
+            len( prompts),
+            args.inference_max_requests,
+            stats["allocated_bytes.all.peak"] / (1024**3),
+            stats["reserved_bytes.all.peak"] / (1024**3),
+            latency,
+        ))
 
     torch.distributed.destroy_process_group()
 

@@ -11,7 +11,14 @@ def get_param_name(model, target_param):
         if param is target_param:
             return name
     return None  # 如果找不到，返回 None
+def ckeck_weight(key, weight1, weight2):
+    if not torch.equal(weight1, weight2 ):
+        print(f"    ⚠️ WARNING: Mismatch in {key}, ")
+    else:
+        print(f"    ✅ Match in {key}")
+    
 def check_hf(path):
+    print("path", path)
     match = re.search(r'TP(\d+)PP(\d+)EP(\d+)', path)
     if match:
         tp = int(match.group(1))
@@ -52,13 +59,14 @@ def check_hf(path):
     for key, value in mg_model_state.items():
         print(key, value.shape)
         if "_extra_state" in key:
+            print("   pass")
             continue
         if "embedding" in key:
-            print(torch.equal(mg_model_state[key], hf_model.model.embed_tokens.weight   ))
+            ckeck_weight(key,mg_model_state[key],hf_model.model.embed_tokens.weight   )
         if "final_layernorm" in key:
-            print(torch.equal(mg_model_state[key], hf_model.model.norm.weight   ))
+            ckeck_weight(key,mg_model_state[key],hf_model.model.norm.weight    )
         if "output_layer"  in key:
-            print(torch.equal(mg_model_state[key], hf_model.lm_head.weight  ))
+            ckeck_weight(key,mg_model_state[key], hf_model.lm_head.weight    )
         if "layers" in key:
             parts = key.split(".")
             layer_idx = int(parts[2])
@@ -66,7 +74,7 @@ def check_hf(path):
             if "self_attention" in key  :
                 hf_attn = hf_layer.self_attn
                 if "linear_proj" in key:
-                    print(torch.equal(mg_model_state[key], hf_attn.o_proj.weight    ))
+                    ckeck_weight(key,mg_model_state[key], hf_attn.o_proj.weight      )
                 if "linear_qkv" in key:
                     if "linear_qkv.weight" in key:
                         num_query_groups=8
@@ -78,15 +86,16 @@ def check_hf(path):
                         hf_attn.k_proj.weight.reshape((num_query_groups, dim, -1)),
                         hf_attn.v_proj.weight.reshape((num_query_groups, dim, -1)),
                         ], dim=1).reshape((-1, config.hidden_size))
-                        print(torch.equal(mg_model_state[key],attn_weight  ))
+                        ckeck_weight(key,mg_model_state[key],attn_weight)
+             
                     if "linear_qkv.layer_norm_weight" in key:
-                        print(torch.equal(mg_model_state[key], hf_layer.input_layernorm.weight    ))
+                        ckeck_weight(key,mg_model_state[key], hf_layer.input_layernorm.weight   )
             if "mlp" in key:
                 hf_mlp = hf_layer.block_sparse_moe
                 if "pre_mlp_layernorm" in key:
-                    print(torch.equal(mg_model_state[key], hf_layer.post_attention_layernorm.weight    ))
+                    ckeck_weight(key,mg_model_state[key],hf_layer.post_attention_layernorm.weight  )
                 if "router" in  key:
-                    print(torch.equal(mg_model_state[key], hf_mlp.gate.weight   ))
+                    ckeck_weight(key,mg_model_state[key], hf_mlp.gate.weight   )
                     print(mg_model_state[key].dtype)
                 if "experts.linear_fc" in  key:
                     hf_experts = hf_mlp.experts
@@ -99,6 +108,7 @@ def check_hf(path):
                                 hf_experts[global_id].w1.weight,
                                 hf_experts[global_id].w3.weight
                             ], dim=0)
+                        ckeck_weight(key,mg_model_state[key], hf_weight  )
                         if not torch.equal(mg_weight, hf_weight):
                             print(f"    ❌ Mismatch in {key}, {get_param_name(hf_model,  hf_experts[global_id].w1.weight) }, {get_param_name(hf_model,  hf_experts[global_id].w3.weight) }")
                             print(f"    Megatron weight shape: {mg_weight.shape}")
@@ -108,6 +118,7 @@ def check_hf(path):
                     if "linear_fc2"  in  key:
                         mg_weight = mg_model_state[key]
                         hf_weight =   hf_experts[global_id].w2.weight
+                        ckeck_weight(key,mg_model_state[key], hf_weight  )
                         if not torch.equal(mg_weight, hf_weight):
                             print(f"    ❌ Mismatch in {key},   {get_param_name(hf_model,  hf_experts[global_id].w2.weight) }")
                             print(f"    Megatron weight shape: {mg_weight.shape}")
