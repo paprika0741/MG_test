@@ -1,6 +1,6 @@
 export DEBUG=0
-TOKENIZER_MODEL=/home/ec2-user/CodeSpace/download/models/Mixtral-8x7B-v0.1/tokenizer.model
-MEGATRON_PATH=/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0
+TOKENIZER_MODEL=/home/download/models/Mixtral-8x7B-v0.1/tokenizer.model
+MEGATRON_PATH=/home/CodeSpace/Megatron-LM-core_v0.12.0
 export PYTHONPATH=$MEGATRON_PATH:$PYTHONPATH
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
@@ -8,8 +8,8 @@ TARGET_TP_SIZE="1"
 TARGET_EP_SIZE="4"
 TARGET_PP_SIZE="1"
  
-HF_FORMAT_DIR=/home/ec2-user/CodeSpace/download/models/Mixtral-8x7B-v0.1
-MEGATRON_FORMAT_DIR=/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/mixtral/mixtral-mcore-TP${TARGET_TP_SIZE}PP${TARGET_PP_SIZE}EP${TARGET_EP_SIZE}Layer1
+HF_FORMAT_DIR=/home/download/models/Mixtral-8x7B-v0.1/
+MEGATRON_FORMAT_DIR="/home/download/models/mg_core/Mixtral-8x7B-v0.1/mcore-TP1PP1EP4"
 
 
 python ../tools/checkpoint/convert.py \

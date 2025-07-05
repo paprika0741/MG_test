@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, Union
 import torch
 import torch.distributed
 from torch import Tensor
-
+import os
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.dist_checkpointing.utils import apply_prefix_mapping
@@ -19,7 +19,8 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import deprecate_inference_params, is_te_min_version, make_viewless_tensor
-
+import torch.distributed as dist
+from megatron.core.transformer.moe.moe_utils  import topk_softmax_with_capacity
 
 def get_transformer_layer_offset(config: TransformerConfig):
     """Get the index offset of current pipeline stage, given the level of pipelining."""
@@ -280,7 +281,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         self.submodules_config = submodules
         self.layer_number = layer_number + get_transformer_layer_offset(self.config)
         self.hidden_dropout = config.hidden_dropout if hidden_dropout is None else hidden_dropout
-
+        # print(f"RANK [{ dist.get_rank() }] init Layers {self.layer_number}")
         # [Module 1: Input Layernorm] Optional Layernorm on the input data
         # TODO: add pytorch only layernorm
         self.input_layernorm = build_module(
@@ -334,6 +335,40 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             hidden_size=self.config.hidden_size,
             eps=self.config.layernorm_epsilon,
         )
+        # Predictor
+        if int(os.getenv("Online_Predict", "0")) == 1:
+            step =  os.getenv("Step", "0") 
+            path =  os.getenv("Predictor_Path", "")
+            if step == "0" or not path:
+                raise RuntimeError("Online_Predict or Predictor_Path not properly set in environment variables.")
+            step =  int(step)
+            target_layer = self.layer_number + step
+            if target_layer <= self.config.num_layers:
+                self.predictor = torch.nn.Parameter(torch.empty((self.config.num_moe_experts, self.config.hidden_size), dtype=torch.float32))
+                self.predictor.data = self.predictor.data.to(dtype=config.params_dtype)
+                self.enable_expert_bias = self.config.moe_router_enable_expert_bias
+                if self.enable_expert_bias:
+                    self.register_buffer(
+                    'local_tokens_per_expert',
+                    torch.zeros(self.config.num_moe_experts, dtype=torch.float32),
+                    persistent=False,
+                    )
+                    self.register_buffer(
+                        'expert_bias', torch.zeros(self.config.num_moe_experts, dtype=torch.float32)
+                    )
+                else:
+                    self.local_tokens_per_expert = None
+                    self.expert_bias = None
+                # model weight index-0
+                # self.layer_number index-1
+                weight_path = os.path.join(path, f'decoder_layers_{target_layer - 1}_mlp_router_weight.pt')
+                print(f"RANK [{ dist.get_rank()}] load predictor at layer {self.layer_number}, target layer = {self.layer_number+step}, from path {weight_path}")
+                weight = torch.load(weight_path, map_location="cpu")
+                weight = weight.to(dtype=self.predictor.dtype, device=self.predictor.device)
+                with torch.no_grad():
+                    self.predictor.copy_(weight)
+            else:
+                self.predictor = None
         # [Module 8: MLP block]
         self.mlp = build_module(submodules.mlp, config=self.config)
         if hasattr(self.mlp, 'set_layer_number'):
@@ -386,10 +421,54 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         This method calls the core computation of a transformer layer, including
         self-attention, cross-attention (if applicable), and feed-forward operations.
         """
+        if int(os.getenv("Layer_Time", "0")) == 1:
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize()
+            start_event.record()
         pre_mlp_layernorm_output, residual, context = self._forward_attention(*args, **kwargs)
+        # Predict
+        if int(os.getenv("Online_Predict", "0")) == 1:
+            pred_routing_map = self.predict(pre_mlp_layernorm_output)
         output = self._forward_mlp(pre_mlp_layernorm_output, residual)
+        if int(os.getenv("Layer_Time", "0")) == 1:
+            end_event.record()
+            torch.cuda.synchronize()
+            elapsed = start_event.elapsed_time(end_event)
+            print(f"RANK[{ dist.get_rank()}] transformer layer {self.layer_number} elapsed {elapsed} ms\n",)
         return output, context
-
+    def predict(self, input: torch.Tensor):
+        assert int(os.getenv("Online_Predict", "0")) == 1
+        '''
+        Predict future layers' expert selection using current hidden_states
+        '''
+        if self.predictor == None:
+            return 
+        if self.predictor.device.type == 'cpu':
+            # move predictor to GPU
+            self.predictor.data = self.predictor.data.to(device=torch.cuda.current_device())
+        router_dtype = input.dtype
+        if self.config.moe_router_dtype == 'fp32':
+            router_dtype = torch.float32
+        elif self.config.moe_router_dtype == 'fp64':
+            router_dtype = torch.float64
+        logits = torch.nn.functional.linear(input.to(router_dtype), self.predictor.to(router_dtype))
+        pred_nex_layer_output = logits.view(-1,logits.shape[-1])
+        _, pred_routing_map, _ = topk_softmax_with_capacity(
+            pred_nex_layer_output,
+            self.config.moe_router_topk,
+            capacity_factor=self.config.moe_expert_capacity_factor,
+            pad_to_capacity=self.config.moe_pad_expert_input_to_capacity,
+            drop_policy=self.config.moe_token_drop_policy,
+            use_pre_softmax=self.config.moe_router_pre_softmax,
+            num_groups=self.config.moe_router_num_groups,
+            group_topk=self.config.moe_router_group_topk,
+            scaling_factor=self.config.moe_router_topk_scaling_factor,
+            deterministic_mode=self.config.deterministic_mode,
+            score_function=self.config.moe_router_score_function,
+            expert_bias=self.expert_bias,
+        )
+        return pred_routing_map
     def _forward_attention(
         self,
         hidden_states: Tensor,

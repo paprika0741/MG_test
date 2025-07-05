@@ -2,11 +2,13 @@
 
 from dataclasses import dataclass
 from typing import Optional, Union
-
+from megatron.core import mpu
+import os
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
-
+from megatron.core.transformer.moe.moe_utils  import topk_softmax_with_capacity
 from megatron.core.dist_checkpointing import ShardedTensor
 from megatron.core.dist_checkpointing.mapping import (
     ReplicaId,
@@ -57,7 +59,8 @@ class MLP(MegatronModule):
         self.config: TransformerConfig = config
 
         self.input_size = input_size if input_size != None else self.config.hidden_size
-
+        self.request_id = -1
+        self.iter_id = 0
         # If this is a gated linear unit we double the output width
         # see https://arxiv.org/pdf/2002.05202.pdf
         if is_expert and self.config.moe_ffn_hidden_size != None:
@@ -68,7 +71,7 @@ class MLP(MegatronModule):
             ffn_hidden_size = self.config.ffn_hidden_size
         if self.config.gated_linear_unit:
             ffn_hidden_size *= 2
-
+            
         self.linear_fc1 = build_module(
             submodules.linear_fc1,
             self.input_size,
@@ -100,6 +103,20 @@ class MLP(MegatronModule):
     def forward(self, hidden_states):
         """Perform the forward pass through the MLP block."""
         # [s, b, 4 * h/p]
+        # save inputs
+        rank = dist.get_rank()
+        if int(os.getenv("DEBUG", "0")) == 1  and not self.config.is_shared_expert:
+                print(f"RANK[{rank}] layer 1 : hidden_states.shape = {hidden_states.shape}")
+        save_dir =   os.getenv("SAVE_TRACE_DIR")
+        if mpu.get_data_parallel_rank() == 0 and save_dir is not None and not self.config.is_shared_expert:
+            path = save_dir
+            os.makedirs(path, exist_ok=True)
+            if hidden_states.shape[0] != 1: # prefilling
+                self.request_id += 1
+                self.iter_id = 0
+            else:
+                self.iter_id += 1
+            torch.save(hidden_states.cpu(), os.path.join(path, f"input_layer_1_request_{self.request_id}_iter_{self.iter_id}.pt"))
         intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
 
         if self.config.bias_activation_fusion:
@@ -132,7 +149,6 @@ class MLP(MegatronModule):
 
         # [s, b, h]
         output, output_bias = self.linear_fc2(intermediate_parallel)
-
         return output, output_bias
 
     # pylint: disable=missing-function-docstring
@@ -148,8 +164,6 @@ class MLP(MegatronModule):
                         sub_sd[k] = apply_swiglu_sharded_factory(v, sharded_offsets)
             sharded_state_dict.update(sub_sd)
         return sharded_state_dict
-
-
 # pylint: disable=missing-function-docstring
 def apply_swiglu_sharded_factory(original_sh_ten, sharded_offsets):
     # We must split the tensor into 2 parts, each sharded separately.

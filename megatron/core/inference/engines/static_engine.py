@@ -174,6 +174,7 @@ class StaticInferenceEngine(AbstractEngine):
                     prompt=prompt, encoder_prompt=encoder_prompt, sampling_params=sampling_params
                 )
                 request_ids.append(request_id)
+            # print(request_ids)
         else:
             for inference_request in inference_requests:
                 request_ids.append(inference_request.request_id)
@@ -200,17 +201,20 @@ class StaticInferenceEngine(AbstractEngine):
         tbar = tqdm(desc="static requests", total=prev_num_requests_pending)
         while self.scheduler.have_requests_pending():
             active_requests: Dict[str, InferenceRequest] = self.scheduler.active_request_pool.copy()
+            # torch.distributed.barrier()
             active_streams: Dict[str, AsyncStream] = OrderedDict()
             for request_id in active_requests:
                 if (stream := self.scheduler.streams.get(request_id, None)) is not None:
                     assert isinstance(stream, AsyncStream), stream
                     active_streams[request_id] = stream
+        
             result_dict: Dict[str, InferenceRequest] = (
                 self.text_generation_controller.generate_all_output_tokens_static_batch(
                     active_requests, active_streams
                 )
             )
-            
+            # print("finish generate_all_output_tokens_static_batch")
+            # torch.distributed.barrier()
             self.scheduler.update_requests_pools(result_dict=result_dict)
 
             crnt_num_requests_pending = self.scheduler.num_requests_pending()

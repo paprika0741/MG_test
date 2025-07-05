@@ -57,7 +57,8 @@ def check_hf(path):
         print(f"{name}: {param.shape}")
     print("MG weight")
     for key, value in mg_model_state.items():
-        print(key, value.shape)
+        if value is not None:
+            print(key, value.shape)
         if "_extra_state" in key:
             print("   pass")
             continue
@@ -125,11 +126,12 @@ def check_hf(path):
                             print(f"    HF weight shape      : {hf_weight.shape}")
                         else:
                             print(f"    ✅ Match in {key}")
-                            
                                             
 parser = argparse.ArgumentParser(description='Modify model checkpoint file paths.')
-parser.add_argument('--root_dir', type=str, help='Root directory containing model files', default="/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/mixtral/mixtral-mcore-TP1PP1EP4Layer1")
-parser.add_argument('--hf_path', type=str,  help='Root directory containing model files', default="/home/ec2-user/CodeSpace/download/models/Mixtral-8x7B-v0.1")
+parser.add_argument('--root_dir', type=str, help='Root directory containing model files', 
+                    default="/home/download/models/mg_core/Mixtral-8x7B-v0.1/mcore-TP1PP1EP4")
+parser.add_argument('--hf_path', type=str,  help='Root directory containing model files',
+                    default="/home/download/models/Mixtral-8x7B-v0.1")
 args = parser.parse_args()
 root_dir = args.root_dir
 hf_path =  args.hf_path

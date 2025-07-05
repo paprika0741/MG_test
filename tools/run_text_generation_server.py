@@ -140,6 +140,7 @@ if __name__ == "__main__":
         load_context = fp8_model_init()
     with load_context:
         model = get_model(model_provider, wrap_with_ddp=False)
+
     if args.load is not None:
         print("Load weight ...")
         _ = load_checkpoint(model, None, None)

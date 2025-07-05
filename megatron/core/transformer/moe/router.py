@@ -3,9 +3,9 @@
 from abc import ABC, abstractmethod
 from functools import partial
 from typing import Callable
-
+from megatron.core import mpu
 import torch
-
+import os
 from megatron.core import parallel_state
 from megatron.core.tensor_parallel import gather_from_sequence_parallel_region
 from megatron.core.transformer.module import MegatronModule
@@ -42,8 +42,10 @@ class Router(ABC, MegatronModule):
         self.weight = torch.nn.Parameter(
             torch.empty((self.config.num_moe_experts, self.config.hidden_size), dtype=torch.float32)
         )
+        
         if config.perform_initialization:
             config.init_method(self.weight)
+            
         self.weight.data = self.weight.data.to(dtype=config.params_dtype)
         setattr(self.weight, 'sequence_parallel', config.sequence_parallel)
         # If calculate per token loss, we need to scale up moe aux loss by the number of tokens.
@@ -68,7 +70,9 @@ class Router(ABC, MegatronModule):
             router_dtype = torch.float32
         elif self.config.moe_router_dtype == 'fp64':
             router_dtype = torch.float64
+        
         logits = torch.nn.functional.linear(input.to(router_dtype), self.weight.to(router_dtype))
+
         return logits
 
     @abstractmethod
@@ -113,7 +117,8 @@ class TopKRouter(Router):
         self.routing_type = self.config.moe_router_load_balancing_type
         self.score_function = self.config.moe_router_score_function
         self.input_jitter = None
-
+        self.request_id = -1
+        self.iter_id = 0
         self.enable_expert_bias = self.config.moe_router_enable_expert_bias
         if self.enable_expert_bias:
             self.register_buffer(
@@ -420,7 +425,7 @@ class TopKRouter(Router):
                 self.local_tokens_per_expert += routing_map.sum(dim=0)
 
         return scores, routing_map
-
+    
     def forward(self, input: torch.Tensor):
         """
         Forward pass of the router.
@@ -429,11 +434,23 @@ class TopKRouter(Router):
             input (torch.Tensor): Input tensor.
         """
         self._maintain_float32_expert_bias()
-
         # Apply input jitter
         input = self.apply_input_jitter(input)
         logits = self.gating(input)
-
         scores, routing_map = self.routing(logits)
 
+        save_dir = os.getenv("SAVE_TRACE_DIR")
+        if mpu.get_expert_model_parallel_rank() == 0 and save_dir is not None:
+            # save trace for predictor training or evaluation
+            path = save_dir
+            if input.shape[0] != 1: # prefilling
+                self.request_id += 1
+                self.iter_id = 0
+            else:
+                self.iter_id += 1
+            os.makedirs(path, exist_ok=True)  # 确保路径存在
+            # torch.save(self.weight.cpu(), os.path.join(path, f"gate_layer_{self.layer_number}.pt"))
+            torch.save(input.cpu(), os.path.join(path, f"input_layer_{self.layer_number}_request_{self.request_id}_iter_{self.iter_id}.pt"))
+            torch.save(logits.cpu(), os.path.join(path, f"logits_layer_{self.layer_number}_request_{self.request_id}_iter_{self.iter_id}.pt"))
+            torch.save(routing_map.cpu(), os.path.join(path, f"routing_map_layer_{self.layer_number}_request_{self.request_id}_iter_{self.iter_id}.pt"))
         return scores, routing_map

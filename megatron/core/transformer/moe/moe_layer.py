@@ -92,7 +92,7 @@ class MoELayer(BaseMoELayer):
         layer_number: Optional[int] = None,
     ):
         self.submodules = submodules
-        if int(os.getenv("EPLB", "0")) == 1:
+        if int(os.getenv("EPLB") or "0") == 1:
             config = copy.deepcopy( config)
         super(MoELayer, self).__init__(config=config, layer_number=layer_number)
         
@@ -109,7 +109,6 @@ class MoELayer(BaseMoELayer):
         if int(os.getenv("EPLB", "0")) == 1:
             self.init_eplb()
             self.auxiliary_cpu_experts_weight = None
-           
             
         if int(os.getenv("REPLICATE", "0")) == 1:
             # replciate on expert in each rank
@@ -142,7 +141,9 @@ class MoELayer(BaseMoELayer):
         
         # Initialize shared experts
         if self.use_shared_expert:
-            self.shared_experts = build_module(self.submodules.shared_experts, config=self.config)
+            shared_expert_config = copy.deepcopy(self.config)
+            shared_expert_config.is_shared_expert = True
+            self.shared_experts = build_module(self.submodules.shared_experts, config=shared_expert_config)
             if self.shared_expert_overlap:
                 self.token_dispatcher.set_shared_experts(self.shared_experts)
     def init_replicate(self):
@@ -229,7 +230,7 @@ class MoELayer(BaseMoELayer):
         self.new_global_expert_indices = phy2log.flatten().tolist()
         if self.ep_rank == 0:
             print("After EPLB, new_global_expert_indices: ", self.new_global_expert_indices)
-       
+        
         # Remap weight values based on the new expert assignment
         self.eplb_modify_weights()
     def eplb_modify_weights(self):

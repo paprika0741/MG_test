@@ -191,6 +191,20 @@ def build_prompt_deepseek(conversation):
             prompt += f"Assistant: {turn['content'].strip()}<｜end▁of▁sentence｜>\n"
     prompt += "Assistant:"
     return prompt
+def build_prompt_mixtral(conversation):
+    prompt = ""
+    for turn in conversation:
+        role = "user" if turn["role"] == "user" else "assistant"
+        prompt += f"<|{role}|>\n{turn['content'].strip()}\n"
+    prompt += "<|assistant|>\n"
+    return prompt
+def build_prompt_qwen(conversation,tokenizer ):
+    prompt = tokenizer.apply_chat_template(
+    conversation,
+    tokenize=False,
+    add_generation_prompt=True
+    )
+    return prompt
 def prepare_prompts(args):
     dataset = load_dataset( "lmsys/lmsys-chat-1m", split="train")
     sample_num = 400
@@ -200,6 +214,11 @@ def prepare_prompts(args):
     samples = [dataset[i] for i in sample_indices]
     if "DeepSeek" in args.hf_path:
         prompts = [ build_prompt_deepseek(i["conversation"]) for  i in  samples ]
+    elif "Mixtral" in   args.hf_path:
+        prompts = [ build_prompt_mixtral(i["conversation"]) for  i in  samples ]
+    elif "Qwen1.5" in   args.hf_path:
+        tokenizer = AutoTokenizer.from_pretrained( args.hf_path)
+        prompts = [ build_prompt_qwen(i["conversation"],tokenizer) for  i in  samples ]
     else:
         raise NotImplementedError
     tokenizer = AutoTokenizer.from_pretrained(args.hf_path)
@@ -302,14 +321,20 @@ def main():
             'exit_on_missing_checkpoint': True,
         },
     )
-
+    args = get_args()
+    args.padded_vocab_size = args.vocab_size
     # Set up model and load checkpoint
     model = get_model(model_provider, wrap_with_ddp=False)
     load_checkpoint(model, None, None, strict=False)
     model = model[0]
-    args = get_args()
+
     inference_engine = get_inference_engine(args, model)
     filtered_prompts = prepare_prompts (args)
+    if args.enable_cuda_graph:
+        print(f"Running warmup for CUDA graphs...")
+        inference_engine.generate(
+                prompts=prompts, sampling_params=sampling_params
+            )
     for i in range(0,100):
         if torch.distributed.get_rank() == 0:
             print(f"================== {i} ==================")
@@ -325,11 +350,7 @@ def main():
         # requests = build_requests(args, get_tokenizer())
         prompts = [ filtered_prompts[i]  ]
 
-        if args.enable_cuda_graph:
-            print(f"Running warmup for CUDA graphs...")
-            inference_engine.generate(
-                    prompts=prompts, sampling_params=sampling_params
-                )
+
         start_time = time.perf_counter()
         if args.stream:
             results: List[InferenceRequest] = asyncio.run(generate(inference_engine, sampling_params, prompts))
@@ -339,7 +360,9 @@ def main():
             )
         end_time = time.perf_counter()
         latency = end_time - start_time
-        torch.distributed.barrier()
+        # torch.distributed.barrier()
+        if torch.distributed.get_rank() == 0:
+            print(f"================== Finish {i} ==================")
         if torch.distributed.get_rank() == 0:
             for idx, result in enumerate(results):
                 print(f' \n------------- RESULT FOR PROMPT {idx} --------------- ')
@@ -389,7 +412,7 @@ def main():
 
 
         stats = torch.cuda.memory_stats()
-        print("static | cg %d | %s | reqs %d [ batch %d ] ... mem %.1f/%.1f ... time %.3f." % (
+        print("static | cg %d | %s | reqs %d [ batch %d ] ... mem %.6f/%.6f ... time %.3f." % (
             args.enable_cuda_graph,
             (
                 f"<user prompts>"

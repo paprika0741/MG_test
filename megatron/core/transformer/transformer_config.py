@@ -325,7 +325,11 @@ class TransformerConfig(ModelParallelConfig):
     moe_shared_expert_overlap: bool = False
     """Enable overlapping between shared expert computations and dispatcher communications.
     Without this, the shared epxerts execute after the routed experts."""
-
+    is_shared_expert:  bool = False
+    """
+    Whether the MLP is a shared expert
+    """
+    
     moe_layer_freq: Union[int, List[int]] = 1
     """Frequency between MoE layers and Dense layers. Accepts either:
     - An integer N: Represents a 1:N ratio, meaning one expert layer for every N-1 dense layers.
