@@ -123,8 +123,9 @@ for layer_id in range(1,layer_num + 1):
 df = pd.DataFrame(data)
 plot_all_layers_latency_cdf(df, total_layers=layer_num )
  
- 
-for layer_id in range(1,layer_num + 1):
+with_res = []
+without_res = []
+for layer_id in range(1,layer_num ):
     filtered_df = df[df["layer_id"] == layer_id ]
     print("======================================")
     with_data= filtered_df[filtered_df["tag"] == "with predict"]
@@ -133,7 +134,18 @@ for layer_id in range(1,layer_num + 1):
     without_data_avg = np.mean(without_data["times"].values[0]) 
     speedup = with_data_avg / without_data_avg
     print(f"[Layer {layer_id}] {speedup} x")
+    print(f"[Layer {layer_id}] {with_data_avg-without_data_avg} ms")
     
+    with_res.append(with_data_avg)
+    without_res.append(without_data_avg)
     
+print("with")
+a = sum(with_res) / len(with_res)
+print(a)
+
+print("without")
+b = sum(without_res) / len(without_res)
+print(b)
+
+print(a-b)
     
-     

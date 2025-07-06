@@ -291,6 +291,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             eps=self.config.layernorm_epsilon,
         )
 
+
+
         attention_optional_kwargs = {}
         if config.context_parallel_size > 1 and config.cp_comm_type is not None:
             if isinstance(config.cp_comm_type, list):
@@ -336,11 +338,13 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             eps=self.config.layernorm_epsilon,
         )
         # Predictor
+        if int(os.getenv("Async_Predict", "0")) == 1:
+            self.controller = None
         if int(os.getenv("Online_Predict", "0")) == 1:
             step =  os.getenv("Step", "0") 
             path =  os.getenv("Predictor_Path", "")
             if step == "0" or not path:
-                raise RuntimeError("Online_Predict or Predictor_Path not properly set in environment variables.")
+                raise RuntimeError("Step or Predictor_Path not properly set in environment variables.")
             step =  int(step)
             target_layer = self.layer_number + step
             if target_layer <= self.config.num_layers:
@@ -428,8 +432,12 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             start_event.record()
         pre_mlp_layernorm_output, residual, context = self._forward_attention(*args, **kwargs)
         # Predict
-        if int(os.getenv("Online_Predict", "0")) == 1:
+        if int(os.getenv("Online_Predict", "0")) == 1 and  self.predictor != None:
             pred_routing_map = self.predict(pre_mlp_layernorm_output)
+        if int(os.getenv("Async_Predict", "0")) == 1  :
+            target = self.layer_number + self.controller.step
+            if target <= self.config.num_layers:
+                self.controller.submit(self.layer_number, pre_mlp_layernorm_output)
         output = self._forward_mlp(pre_mlp_layernorm_output, residual)
         if int(os.getenv("Layer_Time", "0")) == 1:
             end_event.record()
@@ -442,8 +450,6 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         '''
         Predict future layers' expert selection using current hidden_states
         '''
-        if self.predictor == None:
-            return 
         if self.predictor.device.type == 'cpu':
             # move predictor to GPU
             self.predictor.data = self.predictor.data.to(device=torch.cuda.current_device())

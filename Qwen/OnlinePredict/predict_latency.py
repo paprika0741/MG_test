@@ -21,10 +21,20 @@ args = Namespace(
      moe_router_dtype = "fp32"
     
 )
-predictor = torch.nn.Parameter(torch.empty(( args.num_moe_experts, args.hidden_size ), dtype=torch.float32))
-predictor.data = predictor.data.to(dtype=torch.bfloat16)
 
+predictor = torch.nn.Parameter(
+    torch.empty(
+        (args.num_moe_experts, args.hidden_size),
+        device=torch.cuda.current_device(),
+        dtype=torch.bfloat16
+    )
+)
+print(predictor.device)
+memory_bytes = predictor.element_size() * predictor.numel()
+memory_MB = memory_bytes / (1024 ** 2)
 
+print(f"Predictor memory usage: {memory_MB:.2f} MB")
+ 
 @torch.no_grad()
 def predict( input: torch.Tensor):
     if predictor.device.type == 'cpu':
@@ -47,14 +57,14 @@ def predict( input: torch.Tensor):
                 expert_bias= args.moe_router_enable_expert_bias,
             )
 res = []
+
 for token in range(1,4097):
+    print(token)
     input_data = torch.rand(token, 1, args.hidden_size, dtype=torch.bfloat16, device='cuda')
     # Warm-up
     print("Warm up")
     for _ in range(20):
         _ = predict(input_data)
-        
-        
     # 正式计时
     N = 20
     torch.cuda.synchronize()
@@ -66,6 +76,7 @@ for token in range(1,4097):
     avg_time_ms = (end - start) * 1000 / N
     res.append(avg_time_ms)
     print(f"Average Predict time: {avg_time_ms:.3f} ms (over {N} runs)")
+print(res)
 plt.figure(figsize=(10, 6))
 token_lengths = list(range(1, 4097))
 

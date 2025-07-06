@@ -24,7 +24,10 @@ args = Namespace(
 predictor = torch.nn.Parameter(torch.empty(( args.num_moe_experts, args.hidden_size ), dtype=torch.float32))
 predictor.data = predictor.data.to(dtype=torch.bfloat16)
 
-
+memory_bytes = predictor.element_size() * predictor.numel()
+memory_MB = memory_bytes / (1024 ** 2)
+print(memory_MB)
+ 
 @torch.no_grad()
 def predict( input: torch.Tensor):
     if predictor.device.type == 'cpu':

@@ -2,10 +2,11 @@
 
 from collections import OrderedDict
 from typing import Dict, Literal, Optional
-
+import os
 import torch
 from torch import Tensor
-
+from megatron.predictor.global_predictor_controller import set_predictor_controller,get_predictor_controller
+from megatron.predictor.predictor_controller  import  PredictorController
 from megatron.core import tensor_parallel
 from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
@@ -172,7 +173,20 @@ class GPTModel(LanguageModule):
             pre_process=self.pre_process,
             post_process=self.post_process,
         )
-
+        if int(os.getenv("Async_Predict", "0")) == 1:
+            step =  os.getenv("Step", "0") 
+            path =  os.getenv("Predictor_Path", "")
+            print("[Init] Async_Predict is enabled.")
+            if step == "0" or not path:
+                raise RuntimeError("Step or Predictor_Path not properly set in environment variables.")
+            step =  int(step)
+            controller = PredictorController(step=step, path=path, config=self.config)
+            print(f"[Init] Creating PredictorController with step={step} and path={path}")
+            set_predictor_controller(controller)
+            for l_no, layer in enumerate(self.decoder.layers):
+                print(f"set controller {l_no+1}")
+                layer.controller = get_predictor_controller()
+        # set transformer layer controller
         if self.mtp_process:
             self.mtp = MultiTokenPredictionBlock(config=self.config, spec=self.mtp_block_spec)
 
@@ -215,7 +229,7 @@ class GPTModel(LanguageModule):
             log_config_to_disk(
                 self.config, self.state_dict(), prefix=f'{type(self).__name__}_init_ckpt'
             )
-
+        
     def set_input_tensor(self, input_tensor: Tensor) -> None:
         """Sets input tensor to the model.
 
