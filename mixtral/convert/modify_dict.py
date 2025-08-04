@@ -167,6 +167,8 @@ def check_hf_weight(path):
                             print(f"    ✅ Match in {key}")
     print("save to...", path)                   
     torch.save(state,path)
+    # torch.save(state, path, _use_new_zipfile_serialization=False)
+
     
 for i in all_paths:
     check_hf_weight(i)
