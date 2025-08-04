@@ -3,6 +3,11 @@ export IDEAL=0
 export DEBUG=0
 export EPLB=0
 export REPLICATE=0
+
+export NCCL_BLOCKING_WAIT=1
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_TIMEOUT=60  # 设置为 10 分钟
+
 DISTRIBUTED_ARGS="--nproc_per_node 4 \
                   --nnodes 1 \
                   --node_rank 0 \
@@ -53,7 +58,7 @@ torchrun $DISTRIBUTED_ARGS ../tools/run_text_generation_server.py   \
        --load ${CHECKPOINT} \
        --moe-use-shared-expert-gate \
        --add-qkv-bias  \
-       --moe-router-pre-softmax True \
+       --moe-router-pre-softmax   \
        --moe-router-dtype "fp32" 
  
  

@@ -5,10 +5,9 @@ export EPLB=0
 export REPLICATE=0
 MEGATRON_PATH=/home/CodeSpace/Megatron-LM-core_v0.12.0
 TOKENIZER_MODEL="/home/download/models/DeepSeek-V2-Lite"
-# CHECKPOINT="/home/ec2-user/CodeSpace/NEW_Megatron/Megatron-LM-core_v0.12.0/Deepseekv2/mcore-TP1PP1EP4Layer2"
 CHECKPOINT="/home/download/models/mg_core/DeepSeek-V2-Lite/mcore-TP1PP1EP4"
 export PYTHONPATH=$MEGATRON_PATH:$PYTHONPATH
-export CUDA_DEVICE_MAX_CONNECTIONS=1
+ 
 
 DISTRIBUTED_ARGS="--nproc_per_node 4 \
                   --nnodes 1 \

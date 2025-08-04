@@ -113,7 +113,6 @@ def _tokenize_prompts_and_batch(prompts, tokens_to_generate, add_BOS):
                           for prompt in prompts]
     else:
         prompts_tokens = [tokenizer.tokenize(prompt) for prompt in prompts]
-
     # Now we have a list of list of tokens which each list has a different
     # size. We want to extend this list to:
     #   - incorporate the tokens that need to be generated
@@ -128,9 +127,12 @@ def _tokenize_prompts_and_batch(prompts, tokens_to_generate, add_BOS):
     for prompt_tokens, prompt_length in zip(prompts_tokens, prompts_length):
         padding_size = samples_length - prompt_length
         prompt_tokens.extend([eod_token] * padding_size)
-
+        print(len(prompt_tokens))
+    # [modified] Update prompts length.
+    prompts_length = [len(prompt_tokens) for prompt_tokens in prompts_tokens]
     # Now we are in a structured format, we can convert to tensors.
     prompts_tokens_tensor = torch.tensor(prompts_tokens, dtype=torch.long, device='cuda')
+    # print("prompts_tokens_tensor",prompts_tokens_tensor)
     prompts_length_tensor = torch.tensor(prompts_length, dtype=torch.long, device='cuda')
-
+    # print("prompts_length_tensor",prompts_length_tensor)
     return prompts_tokens_tensor, prompts_length_tensor

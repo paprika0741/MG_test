@@ -10,7 +10,7 @@ from megatron.core.inference.model_inference_wrappers.gpt.gpt_inference_wrapper 
 from megatron.core.inference.sampling_params import SamplingParams
 from megatron.inference.text_generation.communication import broadcast_float_list
 from megatron.inference.text_generation.tokenization import tokenize_prompts
-
+import torch
 
 class ModelInferenceWrapperServer(GPTInferenceWrapper):
     def __init__(self, model, inference_wrapper_config):
@@ -88,9 +88,9 @@ def run_mcore_engine(
             request_id=engine.get_new_request_id(),
         )
         requests.append(req)
-
+    # torch.distributed.barrier()
     result = engine.generate(inference_requests=requests)
-    
+    # torch.distributed.barrier()
     # Only post-process on first stage.
     if mpu.is_pipeline_first_stage():
         response_dict = {"text": [x.prompt + x.generated_text for x in result]}

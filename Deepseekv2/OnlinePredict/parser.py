@@ -44,11 +44,15 @@ def parse_shape_counts(log_file, warm_up=10):
  
     
 def parser_logs(file,warm_up=10, layer_id = 1 ):
-    pattern = re.compile(rf'RANK\[0\] transformer layer {layer_id} elapsed ([0-9.]+) ms')
+    pattern = re.compile(rf'RANK\[\d+\] transformer layer {layer_id} elapsed ([0-9.]+) ms')
+
+    # pattern = re.compile(rf'RANK\[0\] transformer layer {layer_id} elapsed ([0-9.]+) ms')
     elapsed_times = []
     # Match pattern: idealX_skewY_eplbZ
     if "Online" in file:
-        tag = "with predict"
+        tag = "Online"
+    elif "Async"  in file:
+        tag = "Async"
     else:
         tag = "without predict"
     with open(file, 'r') as f:
@@ -123,17 +127,42 @@ for layer_id in range(1,layer_num + 1):
 df = pd.DataFrame(data)
 plot_all_layers_latency_cdf(df, total_layers=layer_num )
  
- 
-for layer_id in range(1,layer_num + 1):
+with_res = []
+without_res = []
+for layer_id in range(1,layer_num ):
+    if layer_id == 9:
+        continue
     filtered_df = df[df["layer_id"] == layer_id ]
     print("======================================")
-    with_data= filtered_df[filtered_df["tag"] == "with predict"]
+    with_data= filtered_df[filtered_df["tag"] == "Online"]    
     without_data= filtered_df[filtered_df["tag"] ==  "without predict"]
     with_data_avg = np.mean(with_data["times"].values[0]) 
     without_data_avg = np.mean(without_data["times"].values[0]) 
     speedup = with_data_avg / without_data_avg
     print(f"[Layer {layer_id}] {speedup} x")
+    print(f"[Layer {layer_id}] {with_data_avg-without_data_avg} ms")
     
+    with_res.append(with_data_avg)
+    without_res.append(without_data_avg)
     
-    
-     
+print("with")
+a = sum(with_res) / len(with_res)
+print(a)
+
+print("without")
+b = sum(without_res) / len(without_res)
+print(b)
+
+print(a-b)
+
+print("========================\n")
+def get_avg_time(df, tag, layer):
+    data = df[(df["tag"] ==tag) & (df["layer_id"] != layer)]
+    all_times = np.concatenate(data["times"].values)
+    count = len(all_times)
+    avg_time = np.mean(all_times)
+    print(f"Total number of '{tag}' time entries: {count}")
+    print(f"Average '{tag}' time: {avg_time:.6f} ms")
+get_avg_time(df, "Online", 27)
+get_avg_time(df, "Async", 27)
+get_avg_time(df, "without predict", 27)
