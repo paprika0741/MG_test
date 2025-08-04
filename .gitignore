@@ -21,13 +21,13 @@ env.sh
 disk.sh
 *.pdf
 *.png
-*.sh
+ 
 test/
-**/Predict/*
-**/Predict/*
-Qwen/convert/*
+# **/Predict/*
+# **/Predict/*
+# Qwen/convert/*
 Qwen3-30B-A3B/*
-utils/*
+# utils/*
 **/download.py
 **/convert.sh
 **/mixtral/convert/*

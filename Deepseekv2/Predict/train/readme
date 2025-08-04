@@ -1,0 +1,6 @@
+train.py : 训练gate 200条trace 9:1， 训练之后的gate存储在 ./trained_gate, 训练中间结果在.csv, 
+    read_csv.py 读取训练loss/acc 曲线，绘图
+test_eval_data_before_train.py 绘制曲线，用eval data 
+
+test_trained_expert_budget: 测试训练之后gate，用eval data
+ 
